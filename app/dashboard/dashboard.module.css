@@ -1,0 +1,204 @@
+.page {
+  min-height: 100vh;
+  padding: 2rem 1.5rem;
+  background: radial-gradient(ellipse at top, #1a1a2e 0%, var(--bg) 60%);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 900px;
+  margin: 0 auto 2.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.headerLeft h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+}
+
+.headerLeft p {
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
+}
+
+.username {
+  color: var(--accent);
+}
+
+.logoutBtn {
+  padding: 0.5rem 1.25rem;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+}
+
+.logoutBtn:hover {
+  border-color: var(--wrong-light);
+  color: var(--wrong-light);
+}
+
+.main {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.sectionTitle {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 1.25rem;
+}
+
+.levelsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.25rem;
+}
+
+.levelCard {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+.levelCard.unlocked {
+  border-color: var(--border);
+}
+
+.levelCard.unlocked:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.levelCard.locked {
+  opacity: 0.5;
+}
+
+.levelCard.completed {
+  border-color: var(--correct);
+}
+
+.levelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.levelNumber {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.65rem;
+  border-radius: 99px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge.unlocked {
+  background: rgba(108, 99, 255, 0.2);
+  color: var(--accent);
+}
+
+.badge.locked {
+  background: rgba(144, 144, 168, 0.15);
+  color: var(--fg-muted);
+}
+
+.badge.completed {
+  background: rgba(46, 125, 50, 0.25);
+  color: var(--correct-light);
+}
+
+.tierLabel {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+.stats {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+
+.startBtn {
+  padding: 0.65rem 1rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: center;
+  transition: background 0.2s;
+  text-decoration: none;
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.startBtn:hover {
+  background: var(--accent-hover);
+  text-decoration: none;
+}
+
+.lockedMsg {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  text-align: center;
+  padding: 0.5rem;
+}
+
+.currentLevelBanner {
+  background: linear-gradient(135deg, rgba(108, 99, 255, 0.15), rgba(108, 99, 255, 0.05));
+  border: 1px solid rgba(108, 99, 255, 0.3);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-bottom: 2.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.bannerIcon {
+  font-size: 3rem;
+}
+
+.bannerText h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.bannerText p {
+  color: var(--fg-muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 600px) {
+  .levelsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
