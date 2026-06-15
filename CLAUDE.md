@@ -7,7 +7,11 @@ levels. Built in a single session (2026-06-11) via the `/ship` feature pipeline
 ## Tech Stack
 
 - **Next.js 14 App Router** (TypeScript) — one app serves UI and API route handlers (no Express)
-- **SQLite** via better-sqlite3 v12 (v12 needed for Node 26 prebuilt binaries) at `data/app.db`
+- **Supabase Postgres** via the `postgres` npm library (tagged-template parameterized
+  queries); connection string in `DATABASE_URL`, opened with `{ prepare: false }`
+  because the transaction pooler on port 6543 doesn't support prepared statements.
+  Schema lives in `db/schema.sql` (apply it once in Supabase before seeding).
+  *(Migrated from SQLite/better-sqlite3 in `693441a`.)*
 - **Auth:** bcryptjs password hashing + JWT in an httpOnly `gtf_token` cookie (7 days)
 - **Styling:** vanilla CSS Modules + `app/globals.css`, no UI framework
 - **Flags:** 197 local SVGs in `public/flags/<iso>.svg`, downloaded once from flagcdn.com — no network calls during gameplay
@@ -27,6 +31,20 @@ levels. Built in a single session (2026-06-11) via the `/ship` feature pipeline
    `lib/i18n.ts`, country names for all 197 countries in `lib/countryNames.ts`,
    `LanguageSwitcher` on login/signup/dashboard, locale persisted in `gtf_lang` cookie.
    Test count now 71.
+5. **Supabase migration (`693441a`)** — DB layer moved from SQLite (better-sqlite3) to
+   Supabase Postgres via the `postgres` library; `db/schema.sql` added; also fixed an
+   iOS sticky-selection bug. `data/app.db` and WAL pragmas removed.
+6. **Pre-launch pentest + hardening (`2b6a508`, branch `security-hardening-prelaunch`,
+   PR #1)** — `penetration-tester` subagent audited the post-migration code before going
+   public. Fixed all findings except C1 (operational): **H2** bound `level` in
+   `game/submit` (`1 <= level <= currentLevel`) to stop arbitrary level/`current_level`
+   jumps; **H3** added `lib/security.ts` in-memory rate limiter on login/signup; **M4**
+   `getJwtSecret()` fails closed in prod (lazy, so `next build` still works); **M5**
+   security headers in `next.config.js`; **L6** password min 6→10; **L7** username
+   `^[A-Za-z0-9_.-]+$`; **L8** same-origin CSRF check on signup/login/logout/submit.
+   **C1 (open, owner action):** rotate the weak Supabase DB password and move it out of
+   on-disk `.env`. Next 16 dep-upgrade deferred (advisories not exploitable in this
+   App-Router config). `DOCUMENTATION.md` updated to match.
 
 ## Game Rules (spec-fixed, do not change casually)
 
@@ -40,14 +58,19 @@ levels. Built in a single session (2026-06-11) via the `/ship` feature pipeline
 ## Key Files
 
 - `lib/countries.ts` — **source of truth** for countries (name, ISO, tier). To add or
-  re-tier countries: edit this, then `npx tsx scripts/download-flags.ts` and
-  `npx tsx scripts/seed.ts`
+  re-tier countries: edit this, then `npm run download:flags` and `npm run seed`
 - `lib/countryNames.ts` — hi/bn/pa names per ISO code; a test enforces full coverage
 - `lib/i18n.ts` — Locale type (`en|hi|bn|pa`), UI dictionaries, `t()`, cookie helpers
-- `lib/game.ts` — `buildQuestions(level, locale)`, tier mapping, Fisher-Yates
-- `lib/db.ts` — better-sqlite3 singleton, WAL pragma, schema bootstrap
-- `lib/auth.ts` — bcrypt + JWT + `getUserFromCookie()`
-- API routes under `app/api/` (all `runtime = 'nodejs'` — better-sqlite3 is native):
+- `lib/game.ts` — `async buildQuestions(level, locale)`, tier mapping, Fisher-Yates
+- `lib/db.ts` — `postgres` client singleton (Supabase); throws if `DATABASE_URL` unset.
+  No schema bootstrap — apply `db/schema.sql` in Supabase manually.
+- `db/schema.sql` — Postgres DDL for `users` / `countries` / `user_progress`
+- `lib/auth.ts` — bcrypt + JWT + `getUserFromCookie()` (async); `getJwtSecret()` fails
+  closed in production
+- `lib/security.ts` — in-memory rate limiter (`rateLimit`/`clientIp`/`tooManyRequests`)
+  + CSRF same-origin check (`isSameOrigin`/`crossOriginRejected`). In-memory = single
+  server; use Redis/Upstash for multi-instance/serverless.
+- API routes under `app/api/` (all `runtime = 'nodejs'`):
   auth/signup, auth/login, auth/logout, auth/me, game/start, game/submit, progress
 
 ## i18n Design Decisions
@@ -63,23 +86,39 @@ levels. Built in a single session (2026-06-11) via the `/ship` feature pipeline
 ```bash
 npm run dev                          # dev server
 npm run build && npm start           # production
-npx tsx scripts/download-flags.ts    # fetch flag SVGs (one-time / after adding countries)
-npx tsx scripts/seed.ts              # (re)populate countries table
+npm run download:flags               # fetch flag SVGs (one-time / after adding countries)
+npm run seed                         # (re)populate countries table (needs DATABASE_URL)
 ./node_modules/.bin/tsx --tsconfig tests/tsconfig.json --test tests/gtf.test.ts  # run tests (71)
 ```
 
 There is no `npm test` script — use the tsx command above. The integration suite
-starts its own server on port 3099 and needs a prior `npm run build`.
+starts its own server on port 3099 and needs a prior `npm run build`. DB-dependent
+tests (DB integrity, `buildQuestions`, integration, JWT unit tests) require a reachable
+`DATABASE_URL` — without it they fail in setup (~8 failures, environmental, not a regression).
 
 ## Known Accepted Trade-offs (from `.pipeline/review.md`)
 
 - A crafted client can pass by submitting known-correct countryIds — explicitly
-  accepted by the spec for this educational game; do not over-engineer anti-cheat
+  accepted by the spec for this educational game; do not over-engineer anti-cheat.
+  (Note: `693441a`+pentest fix **does** bound `level`, so this can no longer be combined
+  with a level-jump — see H2 in Session History item 6.)
 - Timer effect calls `handleAnswer(null)` inside a `setTimeLeft` updater
   (React anti-pattern, can double-fire in dev StrictMode; production unaffected)
-- `next.config.js` uses Next 14's `experimental.serverComponentsExternalPackages`;
-  rename to `serverExternalPackages` if upgrading to Next 15
-- JWT_SECRET falls back to a dev default; set it in production
+
+## Security Posture (post-pentest, `2b6a508`)
+
+- **JWT_SECRET** now **fails closed in production** (`getJwtSecret()` throws if unset);
+  it must be set in prod. Dev fallback retained. *(was: silent dev-default fallback)*
+- **Rate limiting** is in-memory (`lib/security.ts`) — single-server only; swap for a
+  shared store on serverless/multi-instance.
+- **`next.config.js`** no longer has `experimental.serverComponentsExternalPackages`
+  (that was for better-sqlite3, now removed); it now sends security headers. Still review
+  key names if upgrading to Next 15/16.
+- **C1 OPEN (owner action, not code):** the Supabase DB password (`guesstheflag123`) is
+  weak and sits in on-disk `.env` (gitignored, not in history). Rotate it and move the
+  secret to the host's secret manager before going public.
+- Residual `npm audit` advisories only fix in Next 16 (breaking); deferred as a separate
+  tested upgrade — not exploitable in this App-Router config.
 
 ## Pipeline Artifacts
 
