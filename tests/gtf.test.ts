@@ -13,11 +13,25 @@ import fs from 'node:fs';
 import os from 'node:os';
 import http from 'node:http';
 import { execSync, spawn, ChildProcess } from 'node:child_process';
+import postgres from 'postgres';
 
 // ─── path helpers ────────────────────────────────────────────────────────────
 const ROOT = path.resolve(__dirname, '..');
 const FLAGS_DIR = path.join(ROOT, 'public', 'flags');
-const REAL_DB = path.join(ROOT, 'data', 'app.db');
+
+// ─── global teardown ─────────────────────────────────────────────────────────
+// lib/db opens a postgres connection pool at module load (imported transitively
+// via lib/game/lib/auth). It is never closed by app code, so without this the
+// open pool keeps the event loop alive and the test runner hangs after all tests
+// pass. Close it once the whole suite is done.
+after(async () => {
+  try {
+    const sql = (await import('../lib/db')).default;
+    await sql.end();
+  } catch {
+    // lib/db may not have been imported (e.g. DATABASE_URL unset) — nothing to close
+  }
+});
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 function sleep(ms: number) {
@@ -194,105 +208,109 @@ describe('lib/auth.ts — signJwt / verifyJwt', () => {
 // SECTION 3: DB / seed integrity
 // ─────────────────────────────────────────────────────────────────────────────
 describe('DB / seed integrity', () => {
-  let Database: typeof import('better-sqlite3');
-  let db: import('better-sqlite3').Database;
+  let sql: ReturnType<typeof postgres>;
 
   before(async () => {
-    Database = (await import('better-sqlite3')).default as unknown as typeof import('better-sqlite3');
-    assert.ok(fs.existsSync(REAL_DB), `Database file missing at ${REAL_DB}`);
-    db = new (Database as any)(REAL_DB, { readonly: true });
+    sql = postgres(process.env.DATABASE_URL!, { prepare: false });
   });
 
-  after(() => {
-    db?.close();
+  after(async () => {
+    await sql.end();
   });
 
-  test('database file exists', () => {
-    assert.ok(fs.existsSync(REAL_DB));
-  });
-
-  test('users table exists with correct columns', () => {
-    const cols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
-    const names = cols.map((c) => c.name);
+  test('users table exists with correct columns', async () => {
+    const cols = await sql<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'users' AND table_schema = 'public'
+    `;
+    const names = cols.map((c) => c.column_name);
     for (const col of ['id', 'username', 'password_hash', 'current_level', 'created_at']) {
       assert.ok(names.includes(col), `users table missing column: ${col}`);
     }
   });
 
-  test('countries table exists with correct columns', () => {
-    const cols = db.prepare("PRAGMA table_info(countries)").all() as Array<{ name: string }>;
-    const names = cols.map((c) => c.name);
+  test('countries table exists with correct columns', async () => {
+    const cols = await sql<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'countries' AND table_schema = 'public'
+    `;
+    const names = cols.map((c) => c.column_name);
     for (const col of ['id', 'name', 'iso_code', 'flag_path', 'difficulty_tier']) {
       assert.ok(names.includes(col), `countries table missing column: ${col}`);
     }
   });
 
-  test('user_progress table exists with correct columns', () => {
-    const cols = db.prepare("PRAGMA table_info(user_progress)").all() as Array<{ name: string }>;
-    const names = cols.map((c) => c.name);
+  test('user_progress table exists with correct columns', async () => {
+    const cols = await sql<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'user_progress' AND table_schema = 'public'
+    `;
+    const names = cols.map((c) => c.column_name);
     for (const col of ['id', 'user_id', 'level_id', 'completed', 'attempts']) {
       assert.ok(names.includes(col), `user_progress table missing column: ${col}`);
     }
   });
 
-  test('countries table row count matches MASTER_COUNTRIES', () => {
-    const row = db.prepare('SELECT COUNT(*) as cnt FROM countries').get() as { cnt: number };
-    assert.equal(row.cnt, 197);
+  test('countries table row count matches MASTER_COUNTRIES', async () => {
+    const rows = await sql<{ cnt: number }[]>`SELECT COUNT(*)::int AS cnt FROM countries`;
+    assert.equal(rows[0].cnt, 197);
   });
 
-  test('all 5 tiers represented in countries table', () => {
-    const rows = db.prepare('SELECT DISTINCT difficulty_tier FROM countries ORDER BY difficulty_tier').all() as Array<{ difficulty_tier: number }>;
+  test('all 5 tiers represented in countries table', async () => {
+    const rows = await sql<{ difficulty_tier: number }[]>`
+      SELECT DISTINCT difficulty_tier FROM countries ORDER BY difficulty_tier
+    `;
     const tiers = rows.map((r) => r.difficulty_tier);
     assert.deepEqual(tiers, [1, 2, 3, 4, 5]);
   });
 
-  test('each tier has at least 20 countries in DB', () => {
+  test('each tier has at least 20 countries in DB', async () => {
     for (let t = 1; t <= 5; t++) {
-      const row = db.prepare('SELECT COUNT(*) as cnt FROM countries WHERE difficulty_tier = ?').get(t) as { cnt: number };
-      assert.ok(row.cnt >= 20, `tier ${t} has ${row.cnt} rows, expected >= 20`);
+      const rows = await sql<{ cnt: number }[]>`
+        SELECT COUNT(*)::int AS cnt FROM countries WHERE difficulty_tier = ${t}
+      `;
+      assert.ok(rows[0].cnt >= 20, `tier ${t} has ${rows[0].cnt} rows, expected >= 20`);
     }
   });
 
-  test('iso_code is unique in countries table', () => {
-    const row = db.prepare('SELECT COUNT(DISTINCT iso_code) as u, COUNT(*) as total FROM countries').get() as { u: number; total: number };
-    assert.equal(row.u, row.total, 'duplicate iso_codes in countries table');
+  test('iso_code is unique in countries table', async () => {
+    const rows = await sql<{ u: number; total: number }[]>`
+      SELECT COUNT(DISTINCT iso_code)::int AS u, COUNT(*)::int AS total FROM countries
+    `;
+    assert.equal(rows[0].u, rows[0].total, 'duplicate iso_codes in countries table');
   });
 
-  test('flag_path matches /flags/<iso>.svg pattern for all rows', () => {
-    const rows = db.prepare('SELECT iso_code, flag_path FROM countries').all() as Array<{ iso_code: string; flag_path: string }>;
+  test('flag_path matches /flags/<iso>.svg pattern for all rows', async () => {
+    const rows = await sql<{ iso_code: string; flag_path: string }[]>`
+      SELECT iso_code, flag_path FROM countries
+    `;
     for (const row of rows) {
       assert.equal(row.flag_path, `/flags/${row.iso_code}.svg`, `flag_path mismatch for ${row.iso_code}`);
     }
-  });
-
-  test('foreign_keys pragma is enforced (WAL mode check)', () => {
-    const row = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
-    assert.equal(row.journal_mode, 'wal');
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SECTION 4: lib/game.ts — buildQuestions
-// Uses a temp DB so we don't mutate the real one, but buildQuestions only
-// reads the countries table, so using the real DB (read) is safe here.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('lib/game.ts — buildQuestions', () => {
-  // We need to load game.ts with a DB that has countries seeded.
-  // lib/db.ts uses DATA_DIR = process.cwd()/data which points to the real DB.
-  // That's fine — we only read from it.
-  let buildQuestions: (level: number) => import('../lib/types').Question[];
+  let buildQuestions: (level: number, locale?: import('../lib/i18n').Locale) => Promise<import('../lib/types').Question[]>;
   let tiersForLevel: (level: number) => number[];
   let QUESTIONS_PER_LEVEL: number;
   let OPTIONS_PER_QUESTION: number;
+  let sql: ReturnType<typeof postgres>;
 
   before(async () => {
-    // lib/game.ts imports lib/db.ts which opens the real DB at process.cwd()/data/app.db.
-    // lib/auth.ts imports next/headers but game.ts does NOT — safe to import directly.
     const mod = await import('../lib/game');
     buildQuestions = mod.buildQuestions;
     tiersForLevel = mod.tiersForLevel;
     QUESTIONS_PER_LEVEL = mod.QUESTIONS_PER_LEVEL;
     OPTIONS_PER_QUESTION = mod.OPTIONS_PER_QUESTION;
+    sql = postgres(process.env.DATABASE_URL!, { prepare: false });
+  });
+
+  after(async () => {
+    await sql.end();
   });
 
   // tiersForLevel helper
@@ -313,13 +331,13 @@ describe('lib/game.ts — buildQuestions', () => {
   // buildQuestions
   for (let lvl = 1; lvl <= 5; lvl++) {
     const level = lvl; // capture for closure
-    test(`buildQuestions(${level}) returns exactly 15 questions`, () => {
-      const qs = buildQuestions(level);
+    test(`buildQuestions(${level}) returns exactly 15 questions`, async () => {
+      const qs = await buildQuestions(level);
       assert.equal(qs.length, QUESTIONS_PER_LEVEL, `level ${level}: got ${qs.length} questions`);
     });
 
-    test(`buildQuestions(${level}): each question has exactly 4 unique options`, () => {
-      const qs = buildQuestions(level);
+    test(`buildQuestions(${level}): each question has exactly 4 unique options`, async () => {
+      const qs = await buildQuestions(level);
       for (const q of qs) {
         assert.equal(q.options.length, OPTIONS_PER_QUESTION, `expected 4 options, got ${q.options.length}`);
         const unique = new Set(q.options);
@@ -327,8 +345,8 @@ describe('lib/game.ts — buildQuestions', () => {
       }
     });
 
-    test(`buildQuestions(${level}): correct option is always present in options`, () => {
-      const qs = buildQuestions(level);
+    test(`buildQuestions(${level}): correct option is always present in options`, async () => {
+      const qs = await buildQuestions(level);
       for (const q of qs) {
         assert.ok(
           q.options.includes(q.correctOption),
@@ -337,59 +355,46 @@ describe('lib/game.ts — buildQuestions', () => {
       }
     });
 
-    test(`buildQuestions(${level}): no duplicate countryIds within the 15 questions`, () => {
-      const qs = buildQuestions(level);
+    test(`buildQuestions(${level}): no duplicate countryIds within the 15 questions`, async () => {
+      const qs = await buildQuestions(level);
       const ids = qs.map((q) => q.countryId);
       const unique = new Set(ids);
       assert.equal(unique.size, ids.length, `duplicate countryIds in level ${level}: ${ids}`);
     });
 
-    test(`buildQuestions(${level}): questions come from the correct tiers`, () => {
-      // We need DB access to verify tiers; use the existing db singleton
-      const Database = require('better-sqlite3');
-      const realDb = new Database(REAL_DB, { readonly: true });
-      try {
-        const qs = buildQuestions(level);
-        const expectedTiers = tiersForLevel(level);
-        for (const q of qs) {
-          const row = realDb
-            .prepare('SELECT difficulty_tier FROM countries WHERE id = ?')
-            .get(q.countryId) as { difficulty_tier: number } | undefined;
-          assert.ok(row, `countryId ${q.countryId} not found in DB`);
-          assert.ok(
-            expectedTiers.includes(row!.difficulty_tier),
-            `level ${level}: countryId ${q.countryId} is in tier ${row!.difficulty_tier}, expected ${expectedTiers}`
-          );
-        }
-      } finally {
-        realDb.close();
+    test(`buildQuestions(${level}): questions come from the correct tiers`, async () => {
+      const qs = await buildQuestions(level);
+      const expectedTiers = tiersForLevel(level);
+      for (const q of qs) {
+        const rows = await sql<{ difficulty_tier: number }[]>`
+          SELECT difficulty_tier FROM countries WHERE id = ${q.countryId}
+        `;
+        assert.ok(rows[0], `countryId ${q.countryId} not found in DB`);
+        assert.ok(
+          expectedTiers.includes(rows[0].difficulty_tier),
+          `level ${level}: countryId ${q.countryId} is in tier ${rows[0].difficulty_tier}, expected ${expectedTiers}`
+        );
       }
     });
 
-    test(`buildQuestions(${level}): flagPath matches /flags/<iso>.svg pattern`, () => {
-      const qs = buildQuestions(level);
+    test(`buildQuestions(${level}): flagPath matches /flags/<iso>.svg pattern`, async () => {
+      const qs = await buildQuestions(level);
       for (const q of qs) {
         assert.match(q.flagPath, /^\/flags\/[a-z]{2}\.svg$/, `bad flagPath: ${q.flagPath}`);
       }
     });
   }
 
-  test('buildQuestions(6): uses tiers 4 and 5', () => {
-    const Database = require('better-sqlite3');
-    const realDb = new Database(REAL_DB, { readonly: true });
-    try {
-      const qs = buildQuestions(6);
-      // level 6 draws from tiers 4+5 pool of 40; should still produce 15
-      assert.equal(qs.length, QUESTIONS_PER_LEVEL);
-      for (const q of qs) {
-        const row = realDb
-          .prepare('SELECT difficulty_tier FROM countries WHERE id = ?')
-          .get(q.countryId) as { difficulty_tier: number } | undefined;
-        assert.ok(row);
-        assert.ok([4, 5].includes(row!.difficulty_tier), `tier ${row!.difficulty_tier} not in [4,5]`);
-      }
-    } finally {
-      realDb.close();
+  test('buildQuestions(6): uses tiers 4 and 5', async () => {
+    const qs = await buildQuestions(6);
+    // level 6 draws from tiers 4+5 pool of 40; should still produce 15
+    assert.equal(qs.length, QUESTIONS_PER_LEVEL);
+    for (const q of qs) {
+      const rows = await sql<{ difficulty_tier: number }[]>`
+        SELECT difficulty_tier FROM countries WHERE id = ${q.countryId}
+      `;
+      assert.ok(rows[0]);
+      assert.ok([4, 5].includes(rows[0].difficulty_tier), `tier ${rows[0].difficulty_tier} not in [4,5]`);
     }
   });
 });
@@ -459,12 +464,11 @@ describe('API integration', () => {
   });
 
   after(async () => {
-    // Clean up test user from the real DB
+    // Clean up test user from the Postgres DB
     try {
-      const Database = require('better-sqlite3');
-      const cleanDb = new Database(REAL_DB);
-      cleanDb.prepare('DELETE FROM users WHERE username LIKE ?').run('testuser_%');
-      cleanDb.close();
+      const cleanSql = postgres(process.env.DATABASE_URL!, { prepare: false });
+      await cleanSql`DELETE FROM users WHERE username LIKE 'testuser_%'`;
+      await cleanSql.end();
     } catch (e) {
       console.error('  [teardown] cleanup error:', e);
     }

@@ -1,10 +1,23 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { cookies } from 'next/headers';
-import db from '@/lib/db';
+import sql from '@/lib/db';
 import { SessionUser } from '@/lib/types';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me';
+// Fail closed: a missing/empty JWT_SECRET in production would otherwise sign every
+// session with a world-known string, letting anyone forge a token for any user.
+// The dev fallback is only permitted outside production. Resolved lazily (not at
+// module load) so a production `next build` — which runs with NODE_ENV=production
+// but no runtime secret — does not fail; the check fires when a token is used.
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (secret && secret.length > 0) return secret;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET environment variable must be set in production');
+  }
+  return 'dev-secret-change-me';
+}
+
 const COOKIE_NAME = 'gtf_token';
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days in seconds
 
@@ -17,19 +30,19 @@ export async function verifyPassword(pw: string, hash: string): Promise<boolean>
 }
 
 export function signJwt(payload: { uid: number; username: string }): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: '7d' });
 }
 
 export function verifyJwt(token: string): { uid: number; username: string } | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { uid: number; username: string };
+    const decoded = jwt.verify(token, getJwtSecret()) as { uid: number; username: string };
     return decoded;
   } catch {
     return null;
   }
 }
 
-export function getUserFromCookie(): SessionUser | null {
+export async function getUserFromCookie(): Promise<SessionUser | null> {
   try {
     const cookieStore = cookies();
     const token = cookieStore.get(COOKIE_NAME)?.value;
@@ -38,10 +51,10 @@ export function getUserFromCookie(): SessionUser | null {
     const payload = verifyJwt(token);
     if (!payload) return null;
 
-    const row = db
-      .prepare('SELECT id, username, current_level FROM users WHERE id = ?')
-      .get(payload.uid) as { id: number; username: string; current_level: number } | undefined;
-
+    const rows = await sql<{ id: number; username: string; current_level: number }[]>`
+      SELECT id, username, current_level FROM users WHERE id = ${payload.uid}
+    `;
+    const row = rows[0];
     if (!row) return null;
 
     return {

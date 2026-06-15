@@ -2,11 +2,12 @@ export const runtime = 'nodejs';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import db from '@/lib/db';
+import sql from '@/lib/db';
 import { getUserFromCookie } from '@/lib/auth';
 import { SubmitAnswer, AnswerKeyItem, SubmitGameResponse } from '@/lib/types';
 import { isLocale, LOCALE_COOKIE, Locale } from '@/lib/i18n';
 import { localizedCountryName } from '@/lib/countryNames';
+import { isSameOrigin, crossOriginRejected } from '@/lib/security';
 
 interface CountryRow {
   id: number;
@@ -15,13 +16,12 @@ interface CountryRow {
   flag_path: string;
 }
 
-interface UserRow {
-  id: number;
-  current_level: number;
-}
-
 export async function POST(req: NextRequest) {
-  const user = getUserFromCookie();
+  if (!isSameOrigin(req)) {
+    return crossOriginRejected();
+  }
+
+  const user = await getUserFromCookie();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -35,7 +35,15 @@ export async function POST(req: NextRequest) {
 
   const { level, answers } = body;
 
-  if (!level || !Array.isArray(answers)) {
+  // A player may only submit for an integer level they have already unlocked.
+  // Without the upper bound, a crafted body (e.g. level: 99999) could jump
+  // current_level arbitrarily via the UPDATE below.
+  if (
+    !Number.isInteger(level) ||
+    level < 1 ||
+    level > user.currentLevel ||
+    !Array.isArray(answers)
+  ) {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
@@ -47,10 +55,10 @@ export async function POST(req: NextRequest) {
   const locale: Locale = isLocale(langCookie) ? langCookie : 'en';
 
   for (const submission of answers) {
-    const country = db
-      .prepare('SELECT id, name, iso_code, flag_path FROM countries WHERE id = ?')
-      .get(submission.countryId) as CountryRow | undefined;
-
+    const found = await sql<CountryRow[]>`
+      SELECT id, name, iso_code, flag_path FROM countries WHERE id = ${submission.countryId}
+    `;
+    const country = found[0];
     if (!country) continue;
 
     const localizedName = localizedCountryName(country.iso_code, country.name, locale);
@@ -74,27 +82,35 @@ export async function POST(req: NextRequest) {
 
   // Persist progress
   if (passed) {
-    db.prepare(`
+    await sql`
       INSERT INTO user_progress (user_id, level_id, completed, attempts)
-      VALUES (?, ?, 1, 1)
-      ON CONFLICT(user_id, level_id) DO UPDATE SET completed = 1, attempts = attempts + 1
-    `).run(user.id, level);
+      VALUES (${user.id}, ${level}, 1, 1)
+      ON CONFLICT (user_id, level_id)
+      DO UPDATE SET completed = 1, attempts = user_progress.attempts + 1
+    `;
 
     // Bump current_level if they just cleared their current level
-    const userRow = db.prepare('SELECT id, current_level FROM users WHERE id = ?').get(user.id) as UserRow;
+    const urows = await sql<{ id: number; current_level: number }[]>`
+      SELECT id, current_level FROM users WHERE id = ${user.id}
+    `;
+    const userRow = urows[0];
     if (userRow && level >= userRow.current_level) {
-      db.prepare('UPDATE users SET current_level = ? WHERE id = ?').run(level + 1, user.id);
+      await sql`UPDATE users SET current_level = ${level + 1} WHERE id = ${user.id}`;
     }
   } else {
-    db.prepare(`
+    await sql`
       INSERT INTO user_progress (user_id, level_id, completed, attempts)
-      VALUES (?, ?, 0, 1)
-      ON CONFLICT(user_id, level_id) DO UPDATE SET attempts = attempts + 1
-    `).run(user.id, level);
+      VALUES (${user.id}, ${level}, 0, 1)
+      ON CONFLICT (user_id, level_id)
+      DO UPDATE SET attempts = user_progress.attempts + 1
+    `;
   }
 
   // Fetch updated current_level
-  const updatedUser = db.prepare('SELECT current_level FROM users WHERE id = ?').get(user.id) as { current_level: number };
+  const updatedRows = await sql<{ current_level: number }[]>`
+    SELECT current_level FROM users WHERE id = ${user.id}
+  `;
+  const updatedUser = updatedRows[0];
 
   const response: SubmitGameResponse = {
     score,

@@ -202,7 +202,7 @@ export default function GamePage() {
           />
         </div>
 
-        <div className={styles.optionsGrid}>
+        <div className={styles.optionsGrid} key={question.countryId}>
           {question.options.map((option) => {
             let btnClass = styles.optionBtn;
             if (phase === 'feedback') {
