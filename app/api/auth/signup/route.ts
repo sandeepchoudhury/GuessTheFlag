@@ -1,7 +1,7 @@
 export const runtime = 'nodejs';
 
 import { NextRequest, NextResponse } from 'next/server';
-import db from '@/lib/db';
+import sql from '@/lib/db';
 import { hashPassword, signJwt, cookieOptions, COOKIE_NAME } from '@/lib/auth';
 import { SessionUser } from '@/lib/types';
 
@@ -39,19 +39,18 @@ export async function POST(req: NextRequest) {
   }
 
   // Check username exists
-  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
-  if (existing) {
+  const existing = await sql`SELECT id FROM users WHERE username = ${username}`;
+  if (existing.length > 0) {
     return NextResponse.json({ error: 'Username already taken' }, { status: 409 });
   }
 
   const passwordHash = await hashPassword(password);
-  const result = db
-    .prepare('INSERT INTO users (username, password_hash, current_level) VALUES (?, ?, 1)')
-    .run(username, passwordHash);
-
-  const newUser = db
-    .prepare('SELECT id, username, current_level FROM users WHERE id = ?')
-    .get(result.lastInsertRowid) as UserRow;
+  const inserted = await sql<UserRow[]>`
+    INSERT INTO users (username, password_hash, current_level)
+    VALUES (${username}, ${passwordHash}, 1)
+    RETURNING id, username, current_level
+  `;
+  const newUser = inserted[0];
 
   const sessionUser: SessionUser = {
     id: newUser.id,

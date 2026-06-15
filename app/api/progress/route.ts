@@ -1,7 +1,7 @@
 export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
-import db from '@/lib/db';
+import sql from '@/lib/db';
 import { getUserFromCookie } from '@/lib/auth';
 
 interface ProgressRow {
@@ -11,14 +11,14 @@ interface ProgressRow {
 }
 
 export async function GET() {
-  const user = getUserFromCookie();
+  const user = await getUserFromCookie();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const rows = db
-    .prepare('SELECT level_id, completed, attempts FROM user_progress WHERE user_id = ?')
-    .all(user.id) as ProgressRow[];
+  const rows = await sql<ProgressRow[]>`
+    SELECT level_id, completed, attempts FROM user_progress WHERE user_id = ${user.id}
+  `;
 
   const progressMap = new Map<number, { completed: boolean; attempts: number }>();
   for (const row of rows) {

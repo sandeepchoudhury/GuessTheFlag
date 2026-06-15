@@ -144,9 +144,11 @@
   line-height: 1.3;
 }
 
-.optionBtn:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: rgba(108, 99, 255, 0.1);
+@media (hover: hover) {
+  .optionBtn:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: rgba(108, 99, 255, 0.1);
+  }
 }
 
 .optionBtn:active:not(:disabled) {

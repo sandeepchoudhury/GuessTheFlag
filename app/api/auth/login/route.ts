@@ -1,7 +1,7 @@
 export const runtime = 'nodejs';
 
 import { NextRequest, NextResponse } from 'next/server';
-import db from '@/lib/db';
+import sql from '@/lib/db';
 import { verifyPassword, signJwt, cookieOptions, COOKIE_NAME } from '@/lib/auth';
 import { SessionUser } from '@/lib/types';
 
@@ -26,9 +26,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Username and password required' }, { status: 400 });
   }
 
-  const row = db
-    .prepare('SELECT id, username, password_hash, current_level FROM users WHERE username = ?')
-    .get(username) as UserRow | undefined;
+  const rows = await sql<UserRow[]>`
+    SELECT id, username, password_hash, current_level FROM users WHERE username = ${username}
+  `;
+  const row = rows[0];
 
   if (!row) {
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });

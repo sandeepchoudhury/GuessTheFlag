@@ -1,4 +1,4 @@
-import db from '@/lib/db';
+import sql from '@/lib/db';
 import { Question } from '@/lib/types';
 import { Locale } from '@/lib/i18n';
 import { localizedCountryName } from '@/lib/countryNames';
@@ -29,13 +29,13 @@ interface CountryRow {
   difficulty_tier: number;
 }
 
-export function buildQuestions(level: number, locale: Locale = 'en'): Question[] {
+export async function buildQuestions(level: number, locale: Locale = 'en'): Promise<Question[]> {
   const tiers = tiersForLevel(level);
-  const placeholders = tiers.map(() => '?').join(',');
-
-  const pool = db
-    .prepare(`SELECT id, name, iso_code, flag_path, difficulty_tier FROM countries WHERE difficulty_tier IN (${placeholders})`)
-    .all(...tiers) as CountryRow[];
+  const pool = await sql<CountryRow[]>`
+    SELECT id, name, iso_code, flag_path, difficulty_tier
+    FROM countries
+    WHERE difficulty_tier = ANY(${tiers})
+  `;
 
   if (pool.length === 0) return [];
 

@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { cookies } from 'next/headers';
-import db from '@/lib/db';
+import sql from '@/lib/db';
 import { SessionUser } from '@/lib/types';
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me';
@@ -29,7 +29,7 @@ export function verifyJwt(token: string): { uid: number; username: string } | nu
   }
 }
 
-export function getUserFromCookie(): SessionUser | null {
+export async function getUserFromCookie(): Promise<SessionUser | null> {
   try {
     const cookieStore = cookies();
     const token = cookieStore.get(COOKIE_NAME)?.value;
@@ -38,10 +38,10 @@ export function getUserFromCookie(): SessionUser | null {
     const payload = verifyJwt(token);
     if (!payload) return null;
 
-    const row = db
-      .prepare('SELECT id, username, current_level FROM users WHERE id = ?')
-      .get(payload.uid) as { id: number; username: string; current_level: number } | undefined;
-
+    const rows = await sql<{ id: number; username: string; current_level: number }[]>`
+      SELECT id, username, current_level FROM users WHERE id = ${payload.uid}
+    `;
+    const row = rows[0];
     if (!row) return null;
 
     return {
