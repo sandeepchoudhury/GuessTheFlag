@@ -4,7 +4,20 @@ import { cookies } from 'next/headers';
 import sql from '@/lib/db';
 import { SessionUser } from '@/lib/types';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-me';
+// Fail closed: a missing/empty JWT_SECRET in production would otherwise sign every
+// session with a world-known string, letting anyone forge a token for any user.
+// The dev fallback is only permitted outside production. Resolved lazily (not at
+// module load) so a production `next build` — which runs with NODE_ENV=production
+// but no runtime secret — does not fail; the check fires when a token is used.
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (secret && secret.length > 0) return secret;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET environment variable must be set in production');
+  }
+  return 'dev-secret-change-me';
+}
+
 const COOKIE_NAME = 'gtf_token';
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days in seconds
 
@@ -17,12 +30,12 @@ export async function verifyPassword(pw: string, hash: string): Promise<boolean>
 }
 
 export function signJwt(payload: { uid: number; username: string }): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: '7d' });
 }
 
 export function verifyJwt(token: string): { uid: number; username: string } | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { uid: number; username: string };
+    const decoded = jwt.verify(token, getJwtSecret()) as { uid: number; username: string };
     return decoded;
   } catch {
     return null;

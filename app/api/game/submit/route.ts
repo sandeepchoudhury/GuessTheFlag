@@ -7,6 +7,7 @@ import { getUserFromCookie } from '@/lib/auth';
 import { SubmitAnswer, AnswerKeyItem, SubmitGameResponse } from '@/lib/types';
 import { isLocale, LOCALE_COOKIE, Locale } from '@/lib/i18n';
 import { localizedCountryName } from '@/lib/countryNames';
+import { isSameOrigin, crossOriginRejected } from '@/lib/security';
 
 interface CountryRow {
   id: number;
@@ -16,6 +17,10 @@ interface CountryRow {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return crossOriginRejected();
+  }
+
   const user = await getUserFromCookie();
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -30,7 +35,15 @@ export async function POST(req: NextRequest) {
 
   const { level, answers } = body;
 
-  if (!level || !Array.isArray(answers)) {
+  // A player may only submit for an integer level they have already unlocked.
+  // Without the upper bound, a crafted body (e.g. level: 99999) could jump
+  // current_level arbitrarily via the UPDATE below.
+  if (
+    !Number.isInteger(level) ||
+    level < 1 ||
+    level > user.currentLevel ||
+    !Array.isArray(answers)
+  ) {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
 

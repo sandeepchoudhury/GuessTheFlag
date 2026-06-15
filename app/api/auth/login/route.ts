@@ -4,6 +4,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import sql from '@/lib/db';
 import { verifyPassword, signJwt, cookieOptions, COOKIE_NAME } from '@/lib/auth';
 import { SessionUser } from '@/lib/types';
+import {
+  rateLimit,
+  clientIp,
+  tooManyRequests,
+  isSameOrigin,
+  crossOriginRejected,
+} from '@/lib/security';
 
 interface UserRow {
   id: number;
@@ -13,6 +20,20 @@ interface UserRow {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) {
+    return crossOriginRejected();
+  }
+
+  // Throttle by IP to cap online brute force regardless of the target account.
+  const ipLimit = rateLimit({
+    key: `login:ip:${clientIp(req)}`,
+    limit: 20,
+    windowMs: 15 * 60 * 1000, // 15 minutes
+  });
+  if (!ipLimit.ok) {
+    return tooManyRequests(ipLimit.retryAfter);
+  }
+
   let body: { username: string; password: string };
   try {
     body = await req.json();
@@ -24,6 +45,16 @@ export async function POST(req: NextRequest) {
 
   if (!username || !password) {
     return NextResponse.json({ error: 'Username and password required' }, { status: 400 });
+  }
+
+  // Also throttle per username so one targeted account can't be hammered from a botnet.
+  const userLimit = rateLimit({
+    key: `login:user:${username.toLowerCase()}`,
+    limit: 10,
+    windowMs: 15 * 60 * 1000, // 15 minutes
+  });
+  if (!userLimit.ok) {
+    return tooManyRequests(userLimit.retryAfter);
   }
 
   const rows = await sql<UserRow[]>`

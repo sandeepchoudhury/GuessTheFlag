@@ -1,6 +1,6 @@
 # Guess the Flag — Functional & Technical Documentation
 
-> Generated: 2026-06-11. All facts are verified directly against source code.
+> Generated: 2026-06-11. Last updated: 2026-06-15. All facts are verified directly against source code.
 
 ---
 
@@ -23,6 +23,7 @@
    - 7.3 [lib/game.ts](#73-libgamets)
    - 7.4 [lib/countries.ts](#74-libcountriests)
    - 7.5 [lib/types.ts](#75-libtypests)
+   - 7.6 [lib/security.ts](#76-libsecurityts)
 8. [UI Pages](#8-ui-pages)
 9. [Setup and Running](#9-setup-and-running)
 10. [Running the Test Suite](#10-running-the-test-suite)
@@ -40,7 +41,7 @@
 
 ## 1. Overview
 
-**Guess the Flag** is a self-hosted, browser-based educational game where registered users identify national flags from multiple-choice options. The application is a single Next.js 14 App Router project that serves both the UI and API from one codebase. Progress is persisted per user in a local SQLite database. All flag images are served as local SVG assets — no external network calls occur during gameplay.
+**Guess the Flag** is a self-hosted, browser-based educational game where registered users identify national flags from multiple-choice options. The application is a single Next.js 14 App Router project that serves both the UI and API from one codebase. Progress is persisted per user in a Supabase Postgres database accessed via the `postgres` npm library. All flag images are served as local SVG assets — no external network calls occur during gameplay.
 
 ---
 
@@ -51,7 +52,7 @@
 | Domain | Geography / flag-recognition education |
 | Target users | Anyone who wants to learn to identify world flags |
 | Deployment model | Single-server Node.js process (Next.js production build) |
-| Data persistence | SQLite file at `data/app.db` |
+| Data persistence | Supabase Postgres via `DATABASE_URL` (connection string) |
 | Authentication | Username + password; JWT stored in an httpOnly cookie |
 | Country coverage | 197 countries (all sovereign states) across 5 difficulty tiers |
 | Out of scope | Multiplayer, leaderboards, social features, mobile-native app |
@@ -66,7 +67,7 @@
 
 1. User visits `/` — server component checks for a valid `gtf_token` cookie; if none, redirects to `/login`.
 2. From `/login`, the user clicks "Sign up" to navigate to `/signup`.
-3. The signup form collects username (3–30 characters), password (minimum 6 characters), and a confirmation password. Client-side pre-validation checks that the two password fields match before submitting.
+3. The signup form collects username (3–30 characters, alphanumeric plus `.`, `_`, `-`), password (minimum 10 characters), and a confirmation password. Client-side pre-validation checks that the two password fields match before submitting.
 4. The form POSTs to `POST /api/auth/signup`. On success (HTTP 201), the server sets the `gtf_token` cookie and the browser is redirected to `/dashboard`.
 5. If the username is already taken, the API returns 409 and an inline error is shown.
 
@@ -80,7 +81,7 @@
 #### Dashboard
 
 1. The dashboard page (`/dashboard`) is a server component. It reads the session via `getUserFromCookie()`. If no valid session exists, the user is redirected to `/login`.
-2. The page queries `user_progress` directly from SQLite and renders a grid of level cards.
+2. The page queries `user_progress` directly from the database (via `lib/db.ts` imported in the server component) and renders a grid of level cards.
 3. Each card displays:
    - Level number and difficulty tier label (Beginner / Easy / Medium / Hard / Expert / Expert Mix)
    - A badge: "Completed" (green), "Unlocked" (accent), or "Locked" (grey)
@@ -157,17 +158,17 @@ Each tier has at least 20 countries (tier 1: 20, tier 2: 20, tier 3: 37, tier 4:
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
-| Framework | Next.js App Router | ^14.2.0 |
+| Framework | Next.js App Router | ^14.2.35 |
 | Language | TypeScript | ^5.4.0 |
 | UI | React | ^18.3.0 |
-| Database | SQLite via better-sqlite3 | ^12.10.0 |
+| Database | Supabase Postgres via `postgres` (npm) | ^3.4.5 |
 | Password hashing | bcryptjs | ^2.4.3 |
 | Session tokens | jsonwebtoken | ^9.0.2 |
 | Styling | Vanilla CSS Modules + globals.css | — |
 | Script runner | tsx | ^4.7.0 |
 | Runtime | Node.js | 26.x (tested) |
 
-better-sqlite3 is synchronous by design. All DB calls in route handlers are blocking but fast — appropriate for a single-user or lightly concurrent deployment. The `export const runtime = 'nodejs'` directive is present on every API route to prevent Next.js from routing them through the Edge runtime.
+The `postgres` library is used with `{ prepare: false }` because Supabase's transaction pooler (port 6543) does not support prepared statements. All DB calls are `async/await`. The `export const runtime = 'nodejs'` directive is present on every API route to prevent Next.js from routing them through the Edge runtime.
 
 ### 4.2 File and Directory Layout
 
@@ -201,60 +202,64 @@ guess-the-flag/
 │       └── progress/
 │           └── route.ts               # GET  /api/progress
 ├── lib/
-│   ├── db.ts                          # SQLite singleton + schema bootstrap
+│   ├── db.ts                          # postgres client singleton (Supabase Postgres)
 │   ├── auth.ts                        # Auth helpers (hash, JWT, cookie)
 │   ├── game.ts                        # buildQuestions(), tiersForLevel(), constants
 │   ├── countries.ts                   # MASTER_COUNTRIES static data
+│   ├── countryNames.ts                # Localized country names (hi/bn/pa)
+│   ├── i18n.ts                        # Locale type, UI dictionaries, t(), cookie helpers
+│   ├── security.ts                    # Rate limiter + CSRF origin check
 │   └── types.ts                       # Shared TypeScript interfaces
 ├── scripts/
-│   ├── download-flags.ts              # One-time: downloads 100 SVGs from flagcdn.com
+│   ├── download-flags.ts              # One-time: downloads 197 SVGs from flagcdn.com
 │   └── seed.ts                        # One-time: populates countries table
 ├── tests/
-│   ├── gtf.test.ts                    # 70-test suite (node:test runner)
+│   ├── gtf.test.ts                    # 71-test suite (node:test runner)
 │   └── tsconfig.json                  # Test-specific TS config (commonjs, react jsx)
 ├── public/
-│   └── flags/                         # 100 local SVG flag files (e.g. us.svg, jp.svg)
-├── data/
-│   └── app.db                         # SQLite database file (runtime-created)
-├── next.config.js                     # experimental.serverComponentsExternalPackages: ['better-sqlite3']
+│   └── flags/                         # 197 local SVG flag files (e.g. us.svg, jp.svg)
+├── next.config.js                     # Security headers; no external package overrides
 ├── tsconfig.json                      # strict:true, @/* path alias, bundler moduleResolution
 ├── package.json
-└── .gitignore                         # node_modules, .next, /data/*.db*
+└── .gitignore                         # node_modules, .next, .env*
 ```
+
+Note: there is no `data/` directory. The SQLite database has been replaced by Supabase Postgres; all persistence is remote.
 
 ---
 
 ## 5. Database Schema
 
-The schema is bootstrapped by `lib/db.ts` on first import using `CREATE TABLE IF NOT EXISTS`. The database file lives at `data/app.db` (created automatically if the `data/` directory does not exist).
+The schema targets Postgres (Supabase) and is defined in **`db/schema.sql`**. There is
+no local schema bootstrap in `lib/db.ts` — the `db.ts` module only opens a connection.
+The tables must be created once in the Supabase project by applying `db/schema.sql`
+(via the Supabase SQL editor or a migration tool) before the seed script is run.
+
+The schema as committed in `db/schema.sql`:
 
 ```sql
--- WAL journal mode and foreign key enforcement are set at connection open.
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS users (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  username      TEXT    NOT NULL UNIQUE,
-  password_hash TEXT    NOT NULL,
-  current_level INTEGER NOT NULL DEFAULT 1,
-  created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+  id            integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  username      text        NOT NULL UNIQUE,
+  password_hash text        NOT NULL,
+  current_level integer     NOT NULL DEFAULT 1,
+  created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS countries (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  name            TEXT    NOT NULL,
-  iso_code        TEXT    NOT NULL UNIQUE,      -- lowercase ISO 3166-1 alpha-2 (e.g. 'us')
-  flag_path       TEXT    NOT NULL,             -- e.g. '/flags/us.svg'
-  difficulty_tier INTEGER NOT NULL CHECK (difficulty_tier BETWEEN 1 AND 5)
+  id              integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name            text    NOT NULL,
+  iso_code        text    NOT NULL UNIQUE,    -- lowercase ISO 3166-1 alpha-2 (e.g. 'us')
+  flag_path       text    NOT NULL,           -- e.g. '/flags/us.svg'
+  difficulty_tier integer NOT NULL CHECK (difficulty_tier BETWEEN 1 AND 5)
 );
 
 CREATE TABLE IF NOT EXISTS user_progress (
-  id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  level_id  INTEGER NOT NULL,
-  completed INTEGER NOT NULL DEFAULT 0,         -- 0 = not completed, 1 = completed
-  attempts  INTEGER NOT NULL DEFAULT 0,
+  id        integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id   integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  level_id  integer NOT NULL,
+  completed integer NOT NULL DEFAULT 0,    -- 0 = not completed, 1 = completed (integer boolean)
+  attempts  integer NOT NULL DEFAULT 0,
   UNIQUE (user_id, level_id)
 );
 ```
@@ -263,15 +268,33 @@ CREATE TABLE IF NOT EXISTS user_progress (
 
 - `users.current_level`: the next level the user is allowed to play. Starts at 1. Incremented to `level + 1` when a user passes `level` (if `level >= current_level` at submission time).
 - `countries.flag_path`: always `/flags/<iso_code>.svg`; this is a relative URL path served from the Next.js `public/` directory.
-- `user_progress.completed`: SQLite integer used as a boolean (0/1). An upsert on pass sets it to 1; a failed attempt preserves the existing value.
+- `user_progress.completed`: integer used as a boolean (0/1). The upsert on pass sets it to 1; a failed attempt preserves the existing value.
 - `user_progress.attempts`: incremented on every submission (pass or fail).
 - Cascade delete: deleting a user also removes their `user_progress` rows.
+
+**Upsert syntax used in route handlers (Postgres `ON CONFLICT`):**
+
+```sql
+-- On pass:
+INSERT INTO user_progress (user_id, level_id, completed, attempts)
+VALUES ($1, $2, 1, 1)
+ON CONFLICT (user_id, level_id)
+DO UPDATE SET completed = 1, attempts = user_progress.attempts + 1;
+
+-- On fail:
+INSERT INTO user_progress (user_id, level_id, completed, attempts)
+VALUES ($1, $2, 0, 1)
+ON CONFLICT (user_id, level_id)
+DO UPDATE SET attempts = user_progress.attempts + 1;
+```
 
 ---
 
 ## 6. API Endpoint Reference
 
-All routes require `export const runtime = 'nodejs'`. Auth-protected routes resolve the session via `getUserFromCookie()` (reads the `gtf_token` httpOnly cookie, verifies the JWT, and fetches the current user row from SQLite). Error responses always have the shape `{ "error": "<message>" }`.
+All routes require `export const runtime = 'nodejs'`. Auth-protected routes resolve the session via `getUserFromCookie()` (reads the `gtf_token` httpOnly cookie, verifies the JWT, and fetches the current user row from Postgres). Error responses always have the shape `{ "error": "<message>" }`.
+
+State-changing POST routes (`/api/auth/signup`, `/api/auth/login`, `/api/auth/logout`, `/api/game/submit`) perform a same-origin check on the `Origin` header before any other logic and return 403 `{ "error": "Cross-origin request rejected" }` if it fails.
 
 ---
 
@@ -279,11 +302,13 @@ All routes require `export const runtime = 'nodejs'`. Auth-protected routes reso
 
 Creates a new user account and issues a session cookie.
 
+**Rate limit:** 5 requests per IP per hour. Exceeding the limit returns 429 with a `Retry-After` header.
+
 **Request body (JSON):**
 ```json
 {
-  "username": "string",          // 3–30 characters, must be unique
-  "password": "string",          // minimum 6 characters
+  "username": "string",          // 3–30 characters, alphanumeric + . _ - only; trimmed
+  "password": "string",          // minimum 10 characters
   "confirmPassword": "string"    // must match password
 }
 ```
@@ -295,9 +320,12 @@ Creates a new user account and issues a session cookie.
 | 201 | Success | `{ "user": { "id": number, "username": string, "currentLevel": 1 } }` |
 | 400 | Invalid JSON | `{ "error": "Invalid JSON" }` |
 | 400 | Username length violation | `{ "error": "Username must be 3-30 characters" }` |
-| 400 | Password too short | `{ "error": "Password must be at least 6 characters" }` |
+| 400 | Username contains invalid characters | `{ "error": "Username may only contain letters, numbers, and . _ -" }` |
+| 400 | Password too short | `{ "error": "Password must be at least 10 characters" }` |
 | 400 | Passwords mismatch | `{ "error": "Passwords do not match" }` |
+| 403 | Cross-origin request | `{ "error": "Cross-origin request rejected" }` |
 | 409 | Username already taken | `{ "error": "Username already taken" }` |
+| 429 | Rate limit exceeded | `{ "error": "Too many requests. Please try again later." }` |
 
 On success, sets `Set-Cookie: gtf_token=<JWT>; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (Max-Age=604800 = 7 days). The `Secure` flag is added only when `NODE_ENV === 'production'`.
 
@@ -306,6 +334,8 @@ On success, sets `Set-Cookie: gtf_token=<JWT>; HttpOnly; SameSite=Lax; Path=/; M
 ### POST /api/auth/login
 
 Authenticates an existing user and issues a session cookie.
+
+**Rate limits:** 20 requests per IP per 15 minutes; 10 requests per username per 15 minutes (checked in that order). Either limit returning exhausted yields 429 with a `Retry-After` header.
 
 **Request body (JSON):**
 ```json
@@ -324,6 +354,8 @@ Authenticates an existing user and issues a session cookie.
 | 400 | Missing fields | `{ "error": "Username and password required" }` |
 | 401 | Unknown username | `{ "error": "Invalid credentials" }` |
 | 401 | Wrong password | `{ "error": "Invalid credentials" }` |
+| 403 | Cross-origin request | `{ "error": "Cross-origin request rejected" }` |
+| 429 | Rate limit exceeded | `{ "error": "Too many requests. Please try again later." }` |
 
 On success, sets the same `gtf_token` cookie as signup.
 
@@ -331,7 +363,7 @@ On success, sets the same `gtf_token` cookie as signup.
 
 ### POST /api/auth/logout
 
-Clears the session cookie.
+Clears the session cookie. Requires a same-origin `Origin` header (if present).
 
 **Request body:** None.
 
@@ -340,6 +372,7 @@ Clears the session cookie.
 | Status | Body |
 |--------|------|
 | 200 | `{ "ok": true }` |
+| 403 | `{ "error": "Cross-origin request rejected" }` |
 
 Sets `Set-Cookie: gtf_token=; Path=/; Max-Age=0` to expire the cookie immediately.
 
@@ -388,7 +421,6 @@ Returns 15 questions for the specified level. Auth required.
       "options": ["Brazil", "Argentina", "Chile", "Colombia"],
       "correctOption": "Brazil"
     }
-    // ... 14 more
   ]
 }
 ```
@@ -399,7 +431,7 @@ Note: `correctOption` is returned in the response (needed for immediate client-s
 
 ### POST /api/game/submit
 
-Grades a completed game session, persists progress, and optionally advances the user's level. Auth required.
+Grades a completed game session, persists progress, and optionally advances the user's level. Auth required. Requires a same-origin `Origin` header (if present).
 
 **Request body (JSON):**
 ```json
@@ -414,14 +446,17 @@ Grades a completed game session, persists progress, and optionally advances the 
 
 `answer: null` represents a timeout (counted as incorrect).
 
+**Validation:** `level` must be a non-zero integer satisfying `1 <= level <= user.currentLevel`. This upper bound prevents arbitrary level-jumping via a crafted request body.
+
 **Responses:**
 
 | Status | Condition | Body |
 |--------|-----------|------|
 | 200 | Always on valid request | See below |
 | 400 | Invalid JSON | `{ "error": "Invalid JSON" }` |
-| 400 | Missing `level` or `answers` not array | `{ "error": "Invalid request body" }` |
+| 400 | `level` out of bounds, non-integer, or `answers` not array | `{ "error": "Invalid request body" }` |
 | 401 | Not authenticated | `{ "error": "Unauthorized" }` |
+| 403 | Cross-origin request | `{ "error": "Cross-origin request rejected" }` |
 
 **Success body (`SubmitGameResponse`):**
 ```json
@@ -438,7 +473,6 @@ Grades a completed game session, persists progress, and optionally advances the 
       "userAnswer": "Brazil",
       "isCorrect": true
     }
-    // ... 14 more
   ]
 }
 ```
@@ -485,15 +519,19 @@ The `levels` array always includes entries from 1 through `max(currentLevel, 5)`
 
 ### 7.1 lib/db.ts
 
-Opens (and on first run creates) the SQLite database at `data/app.db`. The `data/` directory is created with `fs.mkdirSync` if absent. A module-level singleton `db` is exported.
+Exports a `postgres` client singleton connected to Supabase Postgres via the `DATABASE_URL` environment variable. The module throws immediately at import time if `DATABASE_URL` is not set, so a misconfigured deployment fails fast rather than silently.
 
-Configuration applied at connection open:
-- `PRAGMA journal_mode = WAL` — Write-Ahead Logging for better concurrent read performance.
-- `PRAGMA foreign_keys = ON` — Enforces the `REFERENCES users(id) ON DELETE CASCADE` constraint in `user_progress`.
+```typescript
+import postgres from 'postgres';
+const sql = postgres(connectionString, { prepare: false });
+export default sql;
+```
 
-The schema DDL is executed once via `db.exec(...)` using `CREATE TABLE IF NOT EXISTS`, making repeated imports (and server restarts) safe.
+`{ prepare: false }` is required because Supabase's transaction pooler (port 6543) does not support the Postgres extended query protocol (prepared statements). All queries use tagged-template literals, which the `postgres` library parameterizes automatically — no string interpolation of user data occurs.
 
-**Export:** `export default db` — a `better-sqlite3` `Database` instance.
+**Export:** `export default sql` — a `postgres` tagged-template query function.
+
+There is no local schema bootstrap. Tables must exist in the Supabase project before first use. The `data/app.db` SQLite file and WAL pragmas from the previous implementation have been removed entirely.
 
 ---
 
@@ -505,15 +543,15 @@ Provides all authentication primitives.
 |--------|-----------|-------------|
 | `hashPassword` | `(pw: string) => Promise<string>` | bcryptjs hash, salt rounds = 10 |
 | `verifyPassword` | `(pw: string, hash: string) => Promise<boolean>` | bcryptjs compare |
-| `signJwt` | `({ uid, username }) => string` | Signs a JWT with `JWT_SECRET`, expires in 7 days |
+| `signJwt` | `({ uid, username }) => string` | Signs a JWT with `getJwtSecret()`, expires in 7 days |
 | `verifyJwt` | `(token: string) => { uid, username } \| null` | Verifies and decodes; returns null on any error |
-| `getUserFromCookie` | `() => SessionUser \| null` | Reads `gtf_token` via Next.js `cookies()`, calls `verifyJwt`, fetches `id/username/current_level` from DB |
+| `getUserFromCookie` | `() => Promise<SessionUser \| null>` | Reads `gtf_token` via Next.js `cookies()`, calls `verifyJwt`, fetches `id/username/current_level` from Postgres |
 | `cookieOptions` | `(maxAge?) => object` | Returns cookie attribute object: httpOnly, sameSite=lax, path=/, maxAge, secure (prod only) |
 | `COOKIE_NAME` | `'gtf_token'` | The cookie name constant |
 
-`JWT_SECRET` is read from `process.env.JWT_SECRET` with a fallback of `'dev-secret-change-me'`. The fallback allows local development without a `.env.local` file but must be overridden in production.
+**`getJwtSecret()` (internal helper, fail-closed):** Reads `process.env.JWT_SECRET`. If the variable is unset or empty and `NODE_ENV === 'production'`, it throws `Error('JWT_SECRET environment variable must be set in production')`. Outside production it falls back to `'dev-secret-change-me'`. The function is called lazily (only when a token is signed or verified), so `next build` — which runs with `NODE_ENV=production` but without runtime secrets — is unaffected.
 
-`getUserFromCookie` calls `cookies()` from `next/headers`, which only works inside a Next.js request context. It cannot be called from tests or scripts outside the server. Pure functions (`hashPassword`, `verifyPassword`, `signJwt`, `verifyJwt`) can be imported freely.
+`getUserFromCookie` is now `async` because the Postgres query it issues is asynchronous. It can only be called inside a Next.js request context.
 
 ---
 
@@ -532,15 +570,16 @@ Returns the set of `difficulty_tier` values to query for a given level:
 - `level` 1–5 → `[level]` (single-tier)
 - `level` >= 6 → `[4, 5]` (combined Hard + Expert pool)
 
-**`buildQuestions(level: number): Question[]`**
+**`buildQuestions(level: number, locale?: Locale): Promise<Question[]>`**
 
 1. Calls `tiersForLevel(level)` to get the tier set.
-2. Queries all `countries` rows matching `WHERE difficulty_tier IN (...)` using parameterized placeholders (array length determines placeholder count).
+2. Queries all `countries` rows matching `WHERE difficulty_tier = ANY($1)` via a tagged-template parameterized query (array parameter, not string interpolation).
 3. Fisher-Yates shuffles the pool, takes up to 15 as question countries.
 4. For each question country:
    - Filters the pool to exclude the correct country.
    - Fisher-Yates shuffles the remaining pool, takes the first 3 as distractors.
-   - Combines correct country name + 3 distractor names and Fisher-Yates shuffles the 4 options.
+   - Combines the correct country name + 3 distractor names and Fisher-Yates shuffles the 4 options.
+   - Country names are localized via `localizedCountryName()` from `lib/countryNames.ts` using the `locale` parameter (defaults to `'en'`).
 5. Returns a `Question[]` with `countryId`, `flagPath`, `options` (shuffled 4 strings), and `correctOption`.
 
 Edge case: if the pool has fewer than 15 entries (not possible with the current 20-per-tier dataset), the function returns as many questions as available without crashing.
@@ -584,6 +623,46 @@ SubmitGameResponse{ score, total, passed, newCurrentLevel, answerKey: AnswerKeyI
 
 ---
 
+### 7.6 lib/security.ts
+
+Provides two security capabilities used by the auth and game API routes: an in-memory rate limiter and a CSRF same-origin check.
+
+#### Rate limiter
+
+A fixed-window in-memory rate limiter backed by a `Map<string, Bucket>` singleton in the module scope.
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `rateLimit` | `(opts: RateLimitOptions) => RateLimitResult` | Checks and increments a named bucket. Returns `{ ok: true }` if within limit, `{ ok: false, retryAfter: number }` if exceeded. |
+| `clientIp` | `(req: NextRequest) => string` | Extracts client IP from `X-Forwarded-For` or `X-Real-IP` headers; falls back to `'unknown'`. |
+| `tooManyRequests` | `(retryAfter: number) => NextResponse` | Returns a 429 response with `Retry-After` header and JSON body. |
+
+`RateLimitOptions`:
+- `key`: unique bucket identifier (e.g. `login:ip:1.2.3.4`, `login:user:alice`, `signup:ip:1.2.3.4`)
+- `limit`: maximum requests permitted in the window
+- `windowMs`: window duration in milliseconds
+
+**Limits applied:**
+
+| Endpoint | Bucket | Limit | Window |
+|----------|--------|-------|--------|
+| `POST /api/auth/login` | `login:ip:<ip>` | 20 | 15 min |
+| `POST /api/auth/login` | `login:user:<username>` | 10 | 15 min |
+| `POST /api/auth/signup` | `signup:ip:<ip>` | 5 | 1 hour |
+
+**Caveat:** The store is in-process memory. On a multi-instance or serverless deployment (e.g. Vercel), each instance maintains its own independent store and limits are not globally enforced. For global enforcement, replace the `Map` with a shared backend such as Redis or Upstash — the call sites do not need to change.
+
+#### CSRF same-origin check
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `isSameOrigin` | `(req: NextRequest) => boolean` | Returns `true` if the `Origin` header is absent or matches the `Host` header. |
+| `crossOriginRejected` | `() => NextResponse` | Returns a 403 response with `{ "error": "Cross-origin request rejected" }`. |
+
+This check is applied on all state-changing POST routes (`/api/auth/signup`, `/api/auth/login`, `/api/auth/logout`, `/api/game/submit`) as a second CSRF layer alongside `SameSite=lax`. Requests that omit `Origin` (non-browser clients, same-origin navigations) are permitted — browsers always send `Origin` on cross-origin POSTs, so cross-site forgery attempts are still rejected.
+
+---
+
 ## 8. UI Pages
 
 | Route | Component type | Render strategy | Auth guard |
@@ -594,7 +673,7 @@ SubmitGameResponse{ score, total, passed, newCurrentLevel, answerKey: AnswerKeyI
 | `/dashboard` | Server | SSR | `getUserFromCookie()` → redirect `/login` |
 | `/game/[level]` | Client | CSR | API call returns 401/403 |
 
-**`/dashboard`** directly queries SQLite (via `lib/db.ts` imported in the server component) rather than calling `/api/progress`. The API endpoint is provided as a separate JSON interface for programmatic access.
+**`/dashboard`** directly queries Postgres (via `lib/db.ts` imported in the server component) rather than calling `/api/progress`. The API endpoint is provided as a separate JSON interface for programmatic access.
 
 **`/game/[level]`** manages its own state machine with phases: `loading → playing → feedback → results | error`. Timer and feedback timeout refs are cleaned up on unmount via `useEffect` return functions.
 
@@ -606,8 +685,9 @@ SubmitGameResponse{ score, total, passed, newCurrentLevel, answerKey: AnswerKeyI
 
 ### Prerequisites
 
-- Node.js >= 18 (tested on Node 26.3.0)
+- Node.js >= 18 (tested on Node 26.x)
 - npm
+- A Supabase project with the schema from Section 5 applied (tables: `users`, `countries`, `user_progress`)
 
 ### Install dependencies
 
@@ -620,14 +700,16 @@ npm install
 Both commands are idempotent and safe to re-run.
 
 ```bash
-# Download 100 SVG flag files from flagcdn.com into public/flags/
+# Download 197 SVG flag files from flagcdn.com into public/flags/
 npm run download:flags
 
-# Bootstrap the SQLite schema and populate the countries table
+# Populate the countries table in Supabase Postgres
 npm run seed
 ```
 
-The seed script uses `INSERT OR IGNORE`, so re-running it will not create duplicate rows. The flag download script skips files that already exist.
+`npm run seed` uses `INSERT INTO ... ON CONFLICT (iso_code) DO NOTHING`, so re-running it will not create duplicate rows. The flag download script skips files that already exist.
+
+The seed script requires `DATABASE_URL` to be set in the environment (or in a `.env` file at the project root) before running.
 
 ### Development server
 
@@ -651,9 +733,9 @@ npm run lint
 
 ### Notes on first run
 
-- `data/app.db` is created automatically by `lib/db.ts` when the application (or seed script) first imports the database module.
 - `public/flags/` must be populated before the application is used; flags will show broken image icons if the directory is empty.
-- The `data/` directory and `*.db*` files are git-ignored by `.gitignore`.
+- There is no local database file to create. The Postgres schema must be applied to the Supabase project before first use.
+- `DATABASE_URL` must be set in the environment. The application throws at startup if it is missing.
 
 ---
 
@@ -666,7 +748,8 @@ The suite uses the Node.js built-in `node:test` runner, executed via `tsx`.
 ```
 
 **Pre-conditions:**
-- `npm run download:flags` and `npm run seed` must have been run (several tests open `data/app.db` read-only).
+- `DATABASE_URL` must be set so the test runner can reach Supabase.
+- `npm run download:flags` and `npm run seed` must have been run (several tests open the DB read-only and expect the countries table to be populated).
 - `npm run build` must produce a `.next/BUILD_ID` (the integration suite boots a production server on port 3099; it auto-runs `npm run build` if the build artifact is absent).
 
 **Test suites and counts:**
@@ -676,12 +759,12 @@ The suite uses the Node.js built-in `node:test` runner, executed via `tsx`.
 | `lib/countries.ts` | 6 | Count, tier distribution, ISO uniqueness, flag files on disk |
 | `lib/auth.ts — hashPassword/verifyPassword` | 3 | Bcrypt roundtrip, salting |
 | `lib/auth.ts — signJwt/verifyJwt` | 4 | JWT roundtrip, tampered secret, expired token |
-| `DB / seed integrity` | 10 | Schema columns, row counts, tier distribution, WAL mode |
+| `DB / seed integrity` | 10 | Schema columns, row counts, tier distribution |
 | `lib/game.ts — buildQuestions` | 37 | tiersForLevel helper; per-level: count, option uniqueness, correct inclusion, no duplicate IDs, tier correctness, flagPath format; level-6 multi-tier |
 | `API integration` | 13 | Full E2E auth, level locking, game start, all-correct pass, progress endpoint, lock release, partial-correct fail |
-| **Total** | **70** | **All passed** |
+| **Total** | **71** | **All passed** |
 
-Test users are created with a timestamped username prefix (`testuser_<epoch>`) and deleted by the `after` hook (`DELETE FROM users WHERE username LIKE 'testuser_%'`). The real database is not otherwise mutated.
+Test users are created with a timestamped username prefix (`testuser_<epoch>`) and deleted by the `after` hook (`DELETE FROM users WHERE username LIKE 'testuser_%'`). The real database is used (and cleaned up); no test-specific database is provisioned.
 
 ---
 
@@ -689,10 +772,18 @@ Test users are created with a timestamped username prefix (`testuser_<epoch>`) a
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `JWT_SECRET` | Production | `'dev-secret-change-me'` | HMAC secret for signing JWTs. Must be overridden in any deployed environment. |
-| `NODE_ENV` | No | `'development'` | Set to `'production'` by Next.js build/start. Controls the `Secure` flag on the session cookie. |
+| `DATABASE_URL` | **Yes** | None | Supabase Postgres connection string (transaction pooler URL, port 6543). The application throws immediately on import of `lib/db.ts` if this is unset. |
+| `JWT_SECRET` | **Production** | `'dev-secret-change-me'` | HMAC secret for signing JWTs. Must be overridden in any deployed environment. In production, the application throws when the first token is signed or verified if this is unset. |
+| `NODE_ENV` | No | `'development'` | Set to `'production'` by Next.js build/start. Controls the `Secure` flag on the session cookie and the fail-closed behavior of `getJwtSecret()`. |
 
-No `.env` file is committed. Create a `.env.local` file for local overrides if desired (already in `.gitignore`).
+Create a `.env` file at the project root (already in `.gitignore`) for local development:
+
+```
+DATABASE_URL=postgres://...
+JWT_SECRET=<random string>
+```
+
+No `.env` file is committed to version control.
 
 ---
 
@@ -701,19 +792,67 @@ No `.env` file is committed. Create a `.env.local` file for local overrides if d
 ### What is implemented correctly
 
 - **Password hashing:** bcryptjs with salt rounds = 10. Raw passwords are never logged or returned. `verifyPassword` uses `bcrypt.compare`, which is timing-safe.
-- **JWT security:** Tokens are signed with `JWT_SECRET`, have a 7-day expiry, and are verified on every protected request. `verifyJwt` returns `null` for expired, malformed, or differently-signed tokens.
+- **JWT security:** Tokens are signed with `JWT_SECRET` via the lazy `getJwtSecret()` helper that throws in production if the variable is unset (fail-closed). Tokens have a 7-day expiry and are verified on every protected request. `verifyJwt` returns `null` for expired, malformed, or differently-signed tokens.
 - **Cookie security:** `gtf_token` is `httpOnly` (JavaScript cannot read it), `SameSite=lax` (CSRF mitigation), `path=/`, `maxAge=7d`, and `Secure` in production. Logout uses `maxAge=0` to expire the cookie immediately.
-- **SQL injection prevention:** All queries use `better-sqlite3` prepared statements with bound parameters. The dynamic `IN (?, ?)` clause in `buildQuestions` generates placeholders from array length and binds values separately — no string interpolation of user data.
+- **SQL injection prevention:** All queries use the `postgres` library's tagged-template syntax (e.g. `` sql`SELECT ... WHERE id = ${id}` ``). The library parameterizes values automatically — no string interpolation of user data reaches the database. The `ANY($1)` array parameter in `buildQuestions` is also handled safely by the library.
 - **Server-side grading:** `POST /api/game/submit` looks up the correct answer for each `countryId` from the database. It does not trust any client-sent "correct" values. The `correctOption` field returned by `GET /api/game/start` is used only for client-side feedback rendering.
-- **Level access enforcement:** `GET /api/game/start` checks `level > user.currentLevel` (loaded fresh from the DB) and returns 403. The client's claim of which level to play cannot bypass this.
+- **Level access enforcement:** `GET /api/game/start` checks `level > user.currentLevel` (loaded fresh from the DB) and returns 403. `POST /api/game/submit` additionally rejects any `level` that is not a positive integer in the range `[1, user.currentLevel]`, preventing arbitrary level-jumping via a crafted body.
 - **Auth guards:** Every protected route handler calls `getUserFromCookie()` and returns 401 if the result is null. No route relies on the client sending a user ID.
+- **Rate limiting:** Login is capped at 20 requests/15 min per IP and 10 requests/15 min per username. Signup is capped at 5 requests/hour per IP. Both return 429 with `Retry-After` when exhausted.
+- **CSRF defense-in-depth:** All state-changing POST routes check the `Origin` header against `Host` via `isSameOrigin()` in `lib/security.ts`. Requests with no `Origin` (direct API clients, same-origin navigations) pass; cross-origin POSTs are rejected with 403.
+- **Security headers:** `next.config.js` injects the following headers on every response:
+  - `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Referrer-Policy: strict-origin-when-cross-origin`
+  - `Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()`
+  - `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`
+  - (`'unsafe-inline'` for `style-src` and `script-src` is required by Next.js 14's CSS Modules injection and hydration inline scripts; the app itself does not use `dangerouslySetInnerHTML` or `eval`.)
 
 ### Production deployment checklist
 
-1. Set `JWT_SECRET` to a cryptographically random string (e.g. `openssl rand -hex 32`).
-2. Ensure `NODE_ENV=production` so the `Secure` cookie flag is active (requires HTTPS).
-3. Protect the `data/` directory from direct web access (not an issue with Next.js; the directory is outside `public/`).
-4. Consider placing the application behind a reverse proxy (nginx, Caddy) to handle TLS termination.
+1. Set `DATABASE_URL` to the Supabase transaction pooler connection string.
+2. Set `JWT_SECRET` to a cryptographically random string (e.g. `openssl rand -hex 32`). The application throws in production if this is absent.
+3. Ensure `NODE_ENV=production` so the `Secure` cookie flag is active (requires HTTPS).
+4. Rotate the Supabase database password from its initial value to a strong random credential, and store it only in the host's secret manager (never in `.env` files committed to version control).
+5. Consider placing the application behind a reverse proxy (nginx, Caddy) to handle TLS termination.
+
+### Penetration test findings (2026-06-15, pre-launch)
+
+An authorized pre-launch security assessment (static source review + local dynamic
+testing; no production Supabase or external host was touched) was run against the
+post-Supabase-migration codebase. The architecture was found fundamentally sound —
+parameterized SQL throughout (no SQLi), identity always derived from the JWT rather
+than client input (no IDOR), httpOnly/Secure cookies, bcrypt with generic login
+errors, no `dangerouslySetInnerHTML`/`eval` (no XSS sink), and **no `service_role`
+key exposed to the client**.
+
+**Remediation status (2026-06-15):** all findings except C1 have been fixed in code.
+C1 is an operational action (password rotation) the owner must perform in Supabase.
+
+| ID | Severity | Finding | Location | Status |
+|----|----------|---------|----------|--------|
+| C1 | **Critical** | Live Supabase DB password in plaintext on disk, weak value (`guesstheflag123`). `.env` is gitignored and **not** in git history (not leaked via repo), but the credential is trivially guessable and the pooler endpoint is internet-reachable. | `.env:1` | **Open** — owner must rotate the password and move the secret to the host's secret manager. |
+| H2 | **High** | Arbitrary level unlock in submit. `level` from the request body was only checked truthy — never bounded — then used in `UPDATE users SET current_level = level + 1`. With enumerable correct `countryId`s, a user could POST `level: 99999` and skip the entire progression. | `app/api/game/submit/route.ts` | **Fixed** — submit now rejects unless `Number.isInteger(level) && 1 <= level <= user.currentLevel`. Also closes the `level` type-confusion. |
+| H3 | **High** | No rate limiting / lockout on auth endpoints; signup's 409 "Username already taken" is a username-enumeration oracle. | `app/api/auth/login/route.ts`, `app/api/auth/signup/route.ts` | **Fixed** — added `lib/security.ts` rate limiter: login 20/15min per IP + 10/15min per username; signup 5/hour per IP. |
+| M4 | Medium | `JWT_SECRET` falls back to hardcoded `'dev-secret-change-me'`. If unset in production, anyone can forge a token for any user. | `lib/auth.ts` | **Fixed** — `getJwtSecret()` throws in production when `JWT_SECRET` is missing (resolved lazily so `next build` is unaffected); dev fallback retained for local use only. |
+| M5 | Medium | No security headers (empty `next.config.js`: no HSTS/CSP/X-Frame-Options → clickjackable) and `npm audit` flags High-severity vulns in `next@14.2.35`. | `next.config.js`, `package.json` | **Fixed (headers)** — `next.config.js` now sends HSTS, CSP (`frame-ancestors 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`. **Deferred (deps)** — see note below. |
+| L6 | Low | Weak password policy (6-char minimum only); worse combined with H3. | `app/api/auth/signup/route.ts` | **Fixed** — minimum raised to 10 characters. |
+| L7 | Low | Username content unvalidated (control chars, homoglyphs, whitespace-only). | `app/api/auth/signup/route.ts` | **Fixed** — username trimmed and constrained to `^[A-Za-z0-9_.-]+$`. |
+| L8 | Low | State-changing POSTs rely on cookie auth with no CSRF token. | `lib/security.ts`, auth/game POST routes | **Fixed** — added a same-origin (`Origin`-header) check on signup, login, logout, and game/submit as defence-in-depth atop `SameSite=lax`. |
+
+**Notes on residual items:**
+
+- **M5 (dependency advisories):** `next@14.2.35` is already the latest 14.2.x release;
+  the outstanding `npm audit` advisories only have a fix in Next 16 (a breaking major
+  upgrade). They are **not exploitable in this app's configuration** — it uses the App
+  Router (not the Pages-Router i18n middleware path), does not use `next/image` remote
+  optimization, has no `beforeInteractive` scripts, and the postcss advisory is
+  build-time only. A Next 16 upgrade is recommended as a separate, tested effort (it
+  also requires renaming the `next.config.js` keys per the Known Limitations section).
+- **Rate limiter scope:** `lib/security.ts` uses an in-memory store, appropriate for a
+  single-server deployment. On a multi-instance / serverless host (e.g. Vercel), move
+  the store to a shared backend (Redis / Upstash) for the limits to be global.
 
 ---
 
@@ -721,7 +860,7 @@ No `.env` file is committed. Create a `.env.local` file for local overrides if d
 
 ### Accepted by design (spec-documented)
 
-**Client can spoof a perfect score via crafted POST body.** `POST /api/game/submit` computes `total` from the number of submitted answers that match a valid `countryId`, and `passed` from `score === total && total === 15`. A client could POST 15 entries all referencing a single valid `countryId` with the correct answer repeated. The spec (section 6) explicitly calls this out as an accepted trade-off for an educational game: "do not over-engineer anti-cheat."
+**Client can spoof a perfect score via crafted POST body.** `POST /api/game/submit` computes `total` from the number of submitted answers that match a valid `countryId`, and `passed` from `score === total && total === 15`. A client could POST 15 entries all referencing a single valid `countryId` with the correct answer repeated. The spec explicitly calls this out as an accepted trade-off for an educational game: "do not over-engineer anti-cheat." The H2 fix (level-bound validation) prevents this from being combined with arbitrary progression jumps, but the score-spoofing vector within a legitimately unlocked level remains by design.
 
 **Correct answers returned to client on game start.** `GET /api/game/start` returns `correctOption` in each question object so the game page can render immediate feedback without an extra round-trip. This is a deliberate UX choice; the spec acknowledges it. Server-side grading is not weakened by it.
 
@@ -733,13 +872,11 @@ No `.env` file is committed. Create a `.env.local` file for local overrides if d
 
 ### Infrastructure limitations
 
-**Single-file SQLite.** The application is designed for single-server deployment. SQLite's WAL mode supports multiple concurrent readers and one writer, which is adequate for personal or small-group use. It is not suitable for distributed/multi-process deployment.
+**Single-process rate limiting.** The rate limiter in `lib/security.ts` uses an in-memory `Map`. On multi-instance or serverless deployments, each process tracks its own counts; limits are not globally enforced. Replace with a shared Redis/Upstash store if deploying to a horizontally scaled environment.
 
-**No HTTPS or rate limiting built in.** The application provides no built-in rate limiting on auth endpoints (signup/login). A reverse proxy or middleware layer should handle this for any public deployment.
+**Supabase dependency.** The application requires an active Supabase project and internet connectivity to the Supabase pooler endpoint. There is no offline or self-hosted database option without changing `lib/db.ts`.
 
-**better-sqlite3 requires a native build.** The `better-sqlite3` package compiles a C++ addon. The package.json pins `^12.10.0` (rather than the originally specced 9.x) because v12 provides prebuilt binaries for Node.js 26. On other Node.js versions, a native build toolchain (python, make, a C++ compiler) may be required.
-
-**`next.config.js` uses the Next.js 14 key.** `experimental.serverComponentsExternalPackages` is correct for Next.js 14. If the project is upgraded to Next.js 15, this key must be changed to `serverExternalPackages` (at the top level, not under `experimental`).
+**`next.config.js` uses the Next.js 14 API.** The `experimental.serverComponentsExternalPackages` key is no longer present (it was used for `better-sqlite3` which has been removed). If the project is upgraded to Next.js 15, review the `next.config.js` key names for any renamed options.
 
 **No password reset or account management.** There is no "forgot password" flow. Passwords can only be changed by directly updating the database.
 
@@ -851,7 +988,7 @@ Yes           No
 ### 14.3 Sequence Diagram — Game Round
 
 ```
-Browser (client)          Next.js Server          SQLite (app.db)
+Browser (client)          Next.js Server          Supabase Postgres
        |                        |                        |
        |-- GET /game/[level] -->|                        |
        |<-- HTML (client page)--|                        |
@@ -864,8 +1001,8 @@ Browser (client)          Next.js Server          SQLite (app.db)
        |                        |                        |
        |                        |-- buildQuestions(N)    |
        |                        |-- SELECT countries     |
-       |                        |   WHERE tier IN (...)  |
-       |                        |<-- 20 rows -----------|
+       |                        |   WHERE tier = ANY(…)  |
+       |                        |<-- pool rows ---------/
        |                        |                        |
        |<-- 200 StartGameResponse|                       |
        |    (15 questions) -----|                        |
@@ -874,6 +1011,7 @@ Browser (client)          Next.js Server          SQLite (app.db)
        |                        |                        |
        |-- POST /api/game/submit|                        |
        |   { level, answers } ->|                        |
+       |                        |-- origin check         |
        |                        |-- getUserFromCookie()  |
        |                        |-- SELECT users         |
        |                        |<-- user row ----------|
@@ -883,7 +1021,7 @@ Browser (client)          Next.js Server          SQLite (app.db)
        |                        |<-- name, flag_path ---|
        |                        |   (grade answer)       |
        |                        |                        |
-       |                        |-- UPSERT user_progress|
+       |                        |-- UPSERT user_progress |
        |                        |-- UPDATE users         |
        |                        |   current_level (pass) |
        |                        |<-- ok ----------------|
@@ -905,23 +1043,25 @@ Browser (client)          Next.js Server          SQLite (app.db)
          +---> scripts/seed.ts
                      |
                      v
-              data/app.db [countries table]
+              Supabase Postgres [countries table]
                      |
-                     +<--- lib/db.ts (singleton, schema bootstrap)
+                     +<--- lib/db.ts (postgres singleton via DATABASE_URL)
                      |
          +-----------+-----------+
          |           |           |
          v           v           v
   lib/auth.ts   lib/game.ts  API routes
-    hashPw       buildQs()   (use db
+    hashPw       buildQs()   (use sql
     verifyPw     tiersFor       singleton)
     signJwt      Level()
     verifyJwt
     getUser
     FromCookie
+
+  lib/security.ts (rate limit + CSRF origin check)
          |
          v
-    app/api/** (route handlers)
+    app/api/** (POST route handlers)
          |
     +----+----+----+----+----+----+
     |    |    |    |    |    |    |
@@ -961,14 +1101,15 @@ Browser (client)          Next.js Server          SQLite (app.db)
 |  |    |         |          |               |      |
 |  |    |      bcryptjs   countries.ts       |      |
 |  |    |      jsonwebtoken  types.ts        |      |
-|  |    |                                   |      |
+|  |    |      security.ts  countryNames.ts  |      |
+|  |    |      i18n.ts                       |      |
 |  +----+-----------------------------------+      |
 |       |                                          |
-|  [SQLite — data/app.db]                          |
+|  [Supabase Postgres — via DATABASE_URL]          |
 |    users | countries | user_progress             |
 |                                                   |
 |  [Static Assets]                                 |
-|    public/flags/*.svg (100 files)                 |
+|    public/flags/*.svg (197 files)                 |
 +--------------------------------------------------+
 
 External dependencies (one-time setup only):
