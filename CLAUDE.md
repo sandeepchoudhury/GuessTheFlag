@@ -45,6 +45,18 @@ levels. Built in a single session (2026-06-11) via the `/ship` feature pipeline
    **C1 (open, owner action):** rotate the weak Supabase DB password and move it out of
    on-disk `.env`. Next 16 dep-upgrade deferred (advisories not exploitable in this
    App-Router config). `DOCUMENTATION.md` updated to match.
+7. **Stale-dashboard navigation fix** — after passing a level, the dashboard showed
+   the next level still locked until a manual refresh, because the Next.js App Router
+   client-side Router Cache replayed the pre-game `/dashboard` RSC payload on `<Link>`
+   navigation (server render was already fresh — dashboard is a dynamic Server
+   Component re-reading `current_level`). Fix (single file, `app/game/[level]/page.tsx`):
+   converted the results-screen "Dashboard" links (passed + failed branches) and the
+   in-game HUD "Back to Dashboard" link to `<button type="button" onClick={goToDashboard}>`,
+   where `goToDashboard` calls `router.refresh()` **then** `router.push('/dashboard')`
+   to invalidate the cached payload before navigating. HUD exit stays a pure navigation
+   (no `game/submit`, still NOT counted as an attempt). Error-screen Dashboard link and
+   "Play Level N+1" link left as plain `<Link>`. No CSS/i18n/server/API/schema/game-rule
+   changes. Build green; existing suite (74) unaffected. Reviewer verdict: APPROVE.
 
 ## Game Rules (spec-fixed, do not change casually)
 

@@ -1,6 +1,6 @@
 # Guess the Flag — Functional & Technical Documentation
 
-> Generated: 2026-06-11. Last updated: 2026-06-20. All facts are verified directly against source code.
+> Generated: 2026-06-11. Last updated: 2026-06-20 (stale-dashboard navigation fix). All facts are verified directly against source code.
 
 ---
 
@@ -95,7 +95,7 @@
 
 1. Navigating to `/game/[level]` (client component) triggers a `GET /api/game/start?level=N` request on mount.
    - If the level is locked (`level > user.currentLevel`), the API returns 403 and the page shows an error with a link back to the dashboard.
-2. The game HUD shows, in order: a "Back to Dashboard" exit link, the live score, question counter ("Q X / 15"), a progress bar, and a countdown timer. The exit link is rendered only during the `playing`/`feedback` phases (not on loading/error/results screens) and navigates straight to `/dashboard` with no `fetch`/submit call — `POST /api/game/submit` is the sole writer of `user_progress`/`users.current_level` in the app, so leaving mid-round via this link records no attempt and does not change progress.
+2. The game HUD shows, in order: a "Back to Dashboard" exit control, the live score, question counter ("Q X / 15"), a progress bar, and a countdown timer. The exit control is rendered only during the `playing`/`feedback` phases (not on loading/error/results screens). It is a `<button type="button" onClick={goToDashboard}>` (not a `<Link>` — see [Dashboard navigation and the Router Cache](#dashboard-navigation-and-the-router-cache) below) and issues no `fetch`/submit call — `POST /api/game/submit` is the sole writer of `user_progress`/`users.current_level` in the app, so leaving mid-round via this control records no attempt and does not change progress.
 3. For each question:
    - A flag SVG is displayed centrally.
    - Four option buttons (country names, shuffled) are presented in a 2×2 grid.
@@ -107,10 +107,32 @@
 
 After submission the results screen renders:
 
-- **Pass (15/15):** A trophy icon, "Level Up!" animated text, the score, a congratulations message showing the newly unlocked level number, a "Play Level N+1" link, and a "Dashboard" link.
-- **Fail (< 15/15):** A "retry" icon, the score, an encouraging message ("You need 15/15 to pass. Keep trying!"), a "Retry Level N" **button** (`<button onClick>`, not a navigation link — see below), and a "Dashboard" link.
+- **Pass (15/15):** A trophy icon, "Level Up!" animated text, the score, a congratulations message showing the newly unlocked level number, a "Play Level N+1" link, and a "Dashboard" **button** (`<button onClick={onDashboard}>` — see [Dashboard navigation and the Router Cache](#dashboard-navigation-and-the-router-cache) below).
+- **Fail (< 15/15):** A "retry" icon, the score, an encouraging message ("You need 15/15 to pass. Keep trying!"), a "Retry Level N" **button** (`<button onClick>`, not a navigation link — see below), and a "Dashboard" **button** (same `onDashboard` handler as the pass branch).
 
-**Retry behavior (in-place reload, no navigation).** The "Retry Level N" control on the fail branch is a `<button>` wired to a `resetAndReload` callback in the game page, not a `<Link>`. Because the failed round's URL (`/game/[level]`) is identical to the retry target, a same-URL `<Link>` would have been a App-Router no-op (the route's data-loading effect is keyed on `[level]`, which does not change, so it would never re-fire) — this was a real, fixed bug. `resetAndReload` instead: clears the pending feedback timeout and the countdown timer interval (preventing a stale timeout from the just-finished round firing after reset), resets all round state (`results`, `answers`, `currentIndex`, `score`, `selectedAnswer`, `timeLeft`, `errorMsg`) and sets the phase to `loading`, then re-fetches `GET /api/game/start?level=N` and transitions to `playing` (or `error` on failure) — all without a full page navigation or component remount. The pass-branch "Play Level N+1" link and both results-screen "Dashboard" links are unaffected and remain plain `<Link>` navigations.
+**Retry behavior (in-place reload, no navigation).** The "Retry Level N" control on the fail branch is a `<button>` wired to a `resetAndReload` callback in the game page, not a `<Link>`. Because the failed round's URL (`/game/[level]`) is identical to the retry target, a same-URL `<Link>` would have been a App-Router no-op (the route's data-loading effect is keyed on `[level]`, which does not change, so it would never re-fire) — this was a real, fixed bug. `resetAndReload` instead: clears the pending feedback timeout and the countdown timer interval (preventing a stale timeout from the just-finished round firing after reset), resets all round state (`results`, `answers`, `currentIndex`, `score`, `selectedAnswer`, `timeLeft`, `errorMsg`) and sets the phase to `loading`, then re-fetches `GET /api/game/start?level=N` and transitions to `playing` (or `error` on failure) — all without a full page navigation or component remount. The pass-branch "Play Level N+1" link remains a plain `<Link>` (it targets the game route, not the cached dashboard); both results-screen "Dashboard" controls and the in-game HUD exit control are buttons that call `goToDashboard` (see next section). The error-screen "Dashboard" link is unaffected and remains a plain `<Link>`.
+
+#### Dashboard navigation and the Router Cache
+
+**Bug (fixed 2026-06-20):** after passing a level — which unlocks the next level server-side via `POST /api/game/submit` — returning to `/dashboard` through any in-app link showed the newly unlocked level still rendered as locked, until the user performed a manual hard refresh.
+
+**Root cause.** `app/dashboard/page.tsx` is an async Server Component that reads `cookies()` and re-queries `users.current_level` / `user_progress` on every render — it is dynamically rendered and was never stale server-side. The staleness was entirely client-side: the Next.js App Router's **Router Cache** stores the RSC (React Server Component) payload from the last time the client visited a route and replays that cached payload on a subsequent `<Link>` navigation to the same route, even though the server would now render different data. A hard browser refresh bypasses the Router Cache entirely (hence why refresh "fixed" it), but a `<Link href="/dashboard">` click did not.
+
+**Fix (`app/game/[level]/page.tsx` only).** The results-screen "Dashboard" controls (pass and fail branches) and the in-game HUD "Back to Dashboard" exit control were converted from `<Link href="/dashboard">` to `<button type="button" onClick={goToDashboard}>`, where:
+
+```ts
+const router = useRouter();
+const goToDashboard = useCallback(() => {
+  router.refresh();            // invalidate cached /dashboard RSC payload
+  router.push('/dashboard');   // fetch fresh server render
+}, [router]);
+```
+
+`router.refresh()` purges the client Router Cache for the current route tree and is called *before* `router.push('/dashboard')`, so the subsequent navigation resolves against an invalidated cache and forces the App Router to re-fetch and re-render `/dashboard` from the server — reproducing hard-refresh behavior without a full page reload. The reverse order would risk navigating against the still-stale cache entry.
+
+**Left unchanged, by design:** the pass-branch "Play Level N+1" `<Link href={`/game/${level+1}`}>` (targets the game route, not the cached dashboard) and the error-screen "Dashboard" `<Link>` (no progress change occurs on the error path). No server, API, schema, CSS, or game-rule changes were made; `ResultsScreen`'s props gained `onDashboard: () => void` alongside the existing `onRetry`. All three converted controls keep their original CSS Module classes (`styles.btnSecondary`, `styles.exitBtn`) and i18n keys (`dashboard`, `backToDashboard`), with `type="button"` added to prevent implicit form submission.
+
+**Security relevance — none material.** `router.refresh()`/`router.push()` perform no `fetch`, no `POST /api/game/submit`, and no state mutation; they cannot trigger a duplicate submission, manipulate `current_level`/`user_progress`, or weaken the server-side level-unlock checks in `game/start`/`game/submit` (which remain the sole authority — see [Section 12](#12-security-notes)). The HUD exit control continues to record no attempt.
 
 In both cases, a full answer key is rendered below. Each of the 15 rows shows:
 - A thumbnail of the flag
@@ -695,7 +717,7 @@ Kept manually in sync with `package.json`'s `"version"` field (also `0.1.0` as o
 
 **`/dashboard`** directly queries Postgres (via `lib/db.ts` imported in the server component) rather than calling `/api/progress`. The API endpoint is provided as a separate JSON interface for programmatic access.
 
-**`/game/[level]`** manages its own state machine with phases: `loading → playing → feedback → results | error`. Timer and feedback timeout refs are cleaned up on unmount via `useEffect` return functions.
+**`/game/[level]`** manages its own state machine with phases: `loading → playing → feedback → results | error`. Timer and feedback timeout refs are cleaned up on unmount via `useEffect` return functions. All navigation back to `/dashboard` (HUD exit and both results-screen "Dashboard" controls) goes through a `goToDashboard` callback (`router.refresh()` then `router.push('/dashboard')`) rather than a plain `<Link>`, to invalidate the client Router Cache and avoid showing a stale, pre-unlock dashboard — see [Dashboard navigation and the Router Cache](#dashboard-navigation-and-the-router-cache).
 
 **CSS architecture:** All layout and component styles use CSS Modules. Global tokens (colors, spacing, typography, animations) are defined in `app/globals.css` as CSS custom properties. Four keyframe animations are defined globally: `levelUp`, `shimmer`, `fadeIn`, `pulse`. No CSS framework or utility library is used.
 
@@ -786,6 +808,8 @@ The suite uses the Node.js built-in `node:test` runner, executed via `tsx`.
 | **Total** | **74** | **All passed** |
 
 Test users are created with a timestamped username prefix (`testuser_<epoch>`) and deleted by the `after` hook (`DELETE FROM users WHERE username LIKE 'testuser_%'`). The real database is used (and cleaned up); no test-specific database is provisioned.
+
+**Stale-dashboard navigation fix (2026-06-20):** no new tests were added for this change. It is a client-side Router Cache behavior with no DOM/browser test harness in this repo, so it was verified by manual smoke test (pass a level, click "Dashboard" on the results screen, confirm the next level shows Unlocked with no manual browser refresh) per the pipeline review's recommendation, plus a clean `npm run build`. The existing 74-test suite — which has no server/API/schema surface change to react to — passed unaffected.
 
 ---
 
@@ -897,6 +921,34 @@ recommended as a single small, surgical follow-up edit (length cap + element-sha
 guard, combinable in one validation check) but were left out of this batch per the
 pipeline's no-loop-back-for-Low rule. Track as a fast-follow hardening item.
 
+### Penetration test findings (2026-06-20, stale-dashboard navigation fix)
+
+A follow-up authorized review re-scoped to the single-file `app/game/[level]/page.tsx`
+change that converts the results-screen "Dashboard" links and the in-game HUD
+"Back to Dashboard" link from `<Link href="/dashboard">` to
+`<button onClick={goToDashboard}>` (`goToDashboard` = `router.refresh()` then
+`router.push('/dashboard')`), fixing the stale-dashboard-after-unlock bug documented in
+[Dashboard navigation and the Router Cache](#dashboard-navigation-and-the-router-cache).
+Previously-accepted items (C1 weak DB password, the known-correct-`countryId` trade-off,
+the timer anti-pattern) were not re-rated; this change does not touch or worsen any of
+them. **Verdict: PASS — no Critical, High, or Medium findings (1 Info, 1 Low
+non-security cosmetic note).**
+
+| ID | Severity | Finding | Location | Status |
+|----|----------|---------|----------|--------|
+| INFO-1 | Info | `goToDashboard` calls `router.refresh()` while still on `/game/[level]`, causing one transient, discarded RSC refetch of the game route immediately before navigating away. No extra `/api/game/*` call, no submit, no state mutation — negligible wasted request, and it is what makes the destination render fresh. | `app/game/[level]/page.tsx` | No action |
+| LOW-1 | Low (non-security, cosmetic) | `styles.btnSecondary` / `styles.exitBtn` were authored for anchors and don't reset `cursor`/`font`/`text-align`, so the new `<button>` elements may render with subtly different UA defaults (e.g. missing pointer cursor) than the prior `<Link>` anchors. Pre-existing pattern in this file (the retry control was already a `<button className={styles.btnPrimary}>`); carries no security weight. | `app/game/[level]/game.module.css` | Open — cosmetic, out of scope for this fix; candidate for a future styling pass (`cursor: pointer; font: inherit;`) |
+
+**Confirmed by the engagement:** no new network calls (`router.refresh()`/`router.push()`
+issue no `fetch` and never call `POST /api/game/submit`); no new XSS/injection/CSRF
+surface (no new inputs, hardcoded `'/dashboard'` push target, no
+`dangerouslySetInnerHTML`); auth unchanged (`/dashboard` and `/api/*` still authenticate
+via the httpOnly `gtf_token` cookie); server-side unlock logic (`game/start`'s
+`currentLevel` gate and `game/submit`'s H2 level-bound check) remains the sole authority
+for unlocks — the dashboard's enabled/disabled rendering is purely cosmetic and cannot be
+used to actually start a locked level; the HUD "Back to Dashboard" exit continues to
+record no attempt (no forfeit/abandon write, no state mutation).
+
 ---
 
 ## 13. Known Limitations and Accepted Trade-offs
@@ -911,7 +963,9 @@ pipeline's no-loop-back-for-Low rule. Track as a fast-follow hardening item.
 
 **No countryId validation on submit.** The submit handler does not verify that submitted `countryId` values are unique or belong to the tiers associated with `level`. If ever desired, validate that the 15 IDs are distinct and all have `difficulty_tier IN (tiersForLevel(level))`.
 
-**React anti-pattern in timer effect.** In `app/game/[level]/page.tsx`, `handleAnswer(null)` is called from inside a `setTimeLeft` state updater callback. This works in production (the interval is already cleared before the call), but it can double-invoke under React's StrictMode in development. No functional bug was observed.
+**React anti-pattern in timer effect.** In `app/game/[level]/page.tsx`, `handleAnswer(null)` is called from inside a `setTimeLeft` state updater callback. This works in production (the interval is already cleared before the call), but it can double-invoke under React's StrictMode in development. No functional bug was observed. Unaffected by the 2026-06-20 Router Cache navigation fix in the same file.
+
+**Cosmetic UA-default mismatch on converted dashboard buttons.** The results-screen "Dashboard" controls and the in-game HUD "Back to Dashboard" control were converted from `<Link>` anchors to `<button>` elements (see [Dashboard navigation and the Router Cache](#dashboard-navigation-and-the-router-cache)) to fix the stale-dashboard bug. Their CSS Module classes (`styles.btnSecondary`, `styles.exitBtn`) were authored for anchors and don't reset `cursor`/`font`/`text-align`, so the buttons may render with subtly different browser-default styling (e.g. missing pointer cursor) than the prior anchors. Flagged Low/non-security by both the code review and the pentest follow-up; out of scope for the navigation fix itself.
 
 ### Infrastructure limitations
 
