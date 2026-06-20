@@ -144,6 +144,30 @@ export default function GamePage() {
     };
   }, []);
 
+  const resetAndReload = useCallback(() => {
+    if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
+    setResults(null);
+    setAnswers([]);
+    setCurrentIndex(0);
+    setScore(0);
+    setSelectedAnswer(null);
+    setTimeLeft(TIMER_SECONDS);
+    setErrorMsg('');
+    setPhase('loading');
+    fetch(`/api/game/start?level=${level}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) { setErrorMsg(data.error); setPhase('error'); return; }
+        setQuestions(data.questions);
+        setPhase('playing');
+      })
+      .catch(() => {
+        setErrorMsg(t(getClientLocale(), 'failedLoad'));
+        setPhase('error');
+      });
+  }, [level]);
+
   // Loading / Error
   if (phase === 'loading') {
     return (
@@ -165,7 +189,7 @@ export default function GamePage() {
 
   // Results / Answer Key
   if (phase === 'results' && results) {
-    return <ResultsScreen results={results} level={level} locale={locale} />;
+    return <ResultsScreen results={results} level={level} locale={locale} onRetry={resetAndReload} />;
   }
 
   const question = questions[currentIndex];
@@ -176,6 +200,9 @@ export default function GamePage() {
   return (
     <div className={styles.page}>
       <div className={styles.hud}>
+        <Link href="/dashboard" className={styles.exitBtn}>
+          {t(locale, 'backToDashboard')}
+        </Link>
         <div className={styles.hudScore}>
           {t(locale, 'score')}: <span>{score}</span>/{questions.length}
         </div>
@@ -229,7 +256,7 @@ export default function GamePage() {
   );
 }
 
-function ResultsScreen({ results, level, locale }: { results: SubmitGameResponse; level: number; locale: Locale }) {
+function ResultsScreen({ results, level, locale, onRetry }: { results: SubmitGameResponse; level: number; locale: Locale; onRetry: () => void }) {
   const { passed, score, total, newCurrentLevel, answerKey } = results;
 
   return (
@@ -261,9 +288,9 @@ function ResultsScreen({ results, level, locale }: { results: SubmitGameResponse
             </>
           ) : (
             <>
-              <Link href={`/game/${level}`} className={styles.btnPrimary}>
+              <button onClick={onRetry} className={styles.btnPrimary}>
                 {t(locale, 'retryLevel', { n: level })}
-              </Link>
+              </button>
               <Link href="/dashboard" className={styles.btnSecondary}>
                 {t(locale, 'dashboard')}
               </Link>

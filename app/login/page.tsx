@@ -6,6 +6,7 @@ import Link from 'next/link';
 import styles from './login.module.css';
 import { getClientLocale, Locale, t } from '@/lib/i18n';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import { APP_VERSION } from '@/lib/version';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -96,6 +97,7 @@ export default function LoginPage() {
           {t(locale, 'noAccount')}{' '}
           <Link href="/signup">{t(locale, 'signUp')}</Link>
         </div>
+        <p className={styles.version}>v{APP_VERSION}</p>
       </div>
     </div>
   );

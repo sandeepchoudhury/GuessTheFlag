@@ -659,4 +659,132 @@ describe('API integration', () => {
     // currentLevel should stay at 2 (not advance to 3)
     assert.equal(body.newCurrentLevel, 2, `level should stay 2, got ${body.newCurrentLevel}`);
   });
+
+  // ── Batched-grading equivalence (item 2: N+1 loop → single ANY() query) ────
+  // These exercise the exact edge cases called out in the spec/changes for the
+  // submit-route rewrite: an unknown countryId must be skipped (not crash the
+  // ANY() query), a duplicate countryId must be graded independently per
+  // submission (map lookup reused, not deduped away), and an empty answers
+  // array must not error and must report total === 0 / passed === false.
+
+  test('POST /api/game/submit skips an unknown countryId without crashing ANY()', async () => {
+    const startR = await fetchJson(`${BASE}/api/game/start?level=2`, {
+      headers: { Cookie: authCookie },
+    });
+    assert.equal(startR.status, 200);
+    const startBody = startR.body as any;
+
+    const UNKNOWN_ID = 999999999; // does not exist in countries table
+    const answers = [
+      { countryId: UNKNOWN_ID, answer: 'Does Not Matter' },
+      ...startBody.questions
+        .slice(1)
+        .map((q: any) => ({ countryId: q.countryId, answer: q.correctOption })),
+    ];
+
+    const r = await fetchJson(`${BASE}/api/game/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: authCookie },
+      body: JSON.stringify({ level: 2, answers }),
+    });
+
+    assert.equal(r.status, 200, `submit failed: ${JSON.stringify(r.body)}`);
+    const body = r.body as any;
+    // Unknown id is skipped entirely (not pushed into answerKey, not counted in total)
+    assert.equal(body.total, 14, `expected total 14 (15 submitted, 1 unknown skipped), got ${body.total}`);
+    assert.equal(body.score, 14, `expected score 14, got ${body.score}`);
+    assert.equal(body.passed, false, 'total !== 15, so passed must be false even though all known answers are correct');
+    assert.equal(body.answerKey.length, 14);
+    assert.ok(
+      body.answerKey.every((a: any) => a.countryId !== UNKNOWN_ID),
+      'unknown countryId must not appear in answerKey'
+    );
+  });
+
+  test('POST /api/game/submit grades a duplicate countryId independently per submission', async () => {
+    const startR = await fetchJson(`${BASE}/api/game/start?level=2`, {
+      headers: { Cookie: authCookie },
+    });
+    assert.equal(startR.status, 200);
+    const startBody = startR.body as any;
+
+    // Build 15 answers but repeat question[0]'s countryId for question[1] as well,
+    // once with the correct answer and once with a wrong answer — the map-based
+    // lookup must resolve both independently (same country row, different
+    // submission outcome), not collapse/dedupe them.
+    const q0 = startBody.questions[0];
+    const rest = startBody.questions.slice(2).map((q: any) => ({ countryId: q.countryId, answer: q.correctOption }));
+
+    const answers = [
+      { countryId: q0.countryId, answer: q0.correctOption }, // correct
+      { countryId: q0.countryId, answer: 'Definitely Wrong Country Name' }, // same id, wrong answer
+      ...rest,
+    ];
+
+    const r = await fetchJson(`${BASE}/api/game/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: authCookie },
+      body: JSON.stringify({ level: 2, answers }),
+    });
+
+    assert.equal(r.status, 200, `submit failed: ${JSON.stringify(r.body)}`);
+    const body = r.body as any;
+    assert.equal(body.total, 15, 'total counts both duplicate submissions (order preserved)');
+    assert.equal(body.score, 14, 'one of the two duplicate-id submissions is correct, the other wrong');
+    assert.equal(body.passed, false);
+    assert.equal(body.answerKey.length, 15);
+    // Order preserved: first two entries both reference q0's countryId
+    assert.equal(body.answerKey[0].countryId, q0.countryId);
+    assert.equal(body.answerKey[1].countryId, q0.countryId);
+    assert.equal(body.answerKey[0].isCorrect, true);
+    assert.equal(body.answerKey[1].isCorrect, false);
+  });
+
+  test('POST /api/game/submit with empty answers array returns total 0 and passed false', async () => {
+    const r = await fetchJson(`${BASE}/api/game/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: authCookie },
+      body: JSON.stringify({ level: 2, answers: [] }),
+    });
+
+    assert.equal(r.status, 200, `submit failed: ${JSON.stringify(r.body)}`);
+    const body = r.body as any;
+    assert.equal(body.total, 0);
+    assert.equal(body.score, 0);
+    assert.equal(body.passed, false);
+    assert.deepEqual(body.answerKey, []);
+  });
+
+  test('POST /api/game/submit with all 15 timed-out (null) answers scores 0', async () => {
+    const startR = await fetchJson(`${BASE}/api/game/start?level=2`, {
+      headers: { Cookie: authCookie },
+    });
+    assert.equal(startR.status, 200);
+    const startBody = startR.body as any;
+
+    const answers = startBody.questions.map((q: any) => ({ countryId: q.countryId, answer: null }));
+
+    const r = await fetchJson(`${BASE}/api/game/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: authCookie },
+      body: JSON.stringify({ level: 2, answers }),
+    });
+
+    assert.equal(r.status, 200, `submit failed: ${JSON.stringify(r.body)}`);
+    const body = r.body as any;
+    assert.equal(body.total, 15);
+    assert.equal(body.score, 0, 'null answers must never be graded correct');
+    assert.equal(body.passed, false);
+    assert.ok(body.answerKey.every((a: any) => a.isCorrect === false));
+    assert.ok(body.answerKey.every((a: any) => a.userAnswer === null));
+  });
+
+  test('POST /api/game/submit rejects level beyond currentLevel (level-bound check unaffected by batching)', async () => {
+    const r = await fetchJson(`${BASE}/api/game/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: authCookie },
+      body: JSON.stringify({ level: 99999, answers: [] }),
+    });
+    assert.equal(r.status, 400, `expected 400 for out-of-bound level, got ${r.status}: ${JSON.stringify(r.body)}`);
+  });
 });

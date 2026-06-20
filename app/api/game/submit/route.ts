@@ -54,11 +54,16 @@ export async function POST(req: NextRequest) {
   const langCookie = cookies().get(LOCALE_COOKIE)?.value;
   const locale: Locale = isLocale(langCookie) ? langCookie : 'en';
 
+  const ids = answers.map((a) => a.countryId);
+  const rows = ids.length
+    ? await sql<CountryRow[]>`
+        SELECT id, name, iso_code, flag_path FROM countries WHERE id = ANY(${ids})
+      `
+    : [];
+  const byId = new Map(rows.map((c) => [c.id, c]));
+
   for (const submission of answers) {
-    const found = await sql<CountryRow[]>`
-      SELECT id, name, iso_code, flag_path FROM countries WHERE id = ${submission.countryId}
-    `;
-    const country = found[0];
+    const country = byId.get(submission.countryId);
     if (!country) continue;
 
     const localizedName = localizedCountryName(country.iso_code, country.name, locale);

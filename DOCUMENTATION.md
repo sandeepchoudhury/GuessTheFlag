@@ -1,6 +1,6 @@
 # Guess the Flag — Functional & Technical Documentation
 
-> Generated: 2026-06-11. Last updated: 2026-06-15. All facts are verified directly against source code.
+> Generated: 2026-06-11. Last updated: 2026-06-20. All facts are verified directly against source code.
 
 ---
 
@@ -24,6 +24,7 @@
    - 7.4 [lib/countries.ts](#74-libcountriests)
    - 7.5 [lib/types.ts](#75-libtypests)
    - 7.6 [lib/security.ts](#76-libsecurityts)
+   - 7.7 [lib/version.ts](#77-libversionts)
 8. [UI Pages](#8-ui-pages)
 9. [Setup and Running](#9-setup-and-running)
 10. [Running the Test Suite](#10-running-the-test-suite)
@@ -94,7 +95,7 @@
 
 1. Navigating to `/game/[level]` (client component) triggers a `GET /api/game/start?level=N` request on mount.
    - If the level is locked (`level > user.currentLevel`), the API returns 403 and the page shows an error with a link back to the dashboard.
-2. The game HUD shows: live score, question counter ("Q X / 15"), a progress bar, and a countdown timer.
+2. The game HUD shows, in order: a "Back to Dashboard" exit link, the live score, question counter ("Q X / 15"), a progress bar, and a countdown timer. The exit link is rendered only during the `playing`/`feedback` phases (not on loading/error/results screens) and navigates straight to `/dashboard` with no `fetch`/submit call — `POST /api/game/submit` is the sole writer of `user_progress`/`users.current_level` in the app, so leaving mid-round via this link records no attempt and does not change progress.
 3. For each question:
    - A flag SVG is displayed centrally.
    - Four option buttons (country names, shuffled) are presented in a 2×2 grid.
@@ -106,8 +107,10 @@
 
 After submission the results screen renders:
 
-- **Pass (15/15):** A trophy icon, "Level Up!" animated text, the score, a congratulations message showing the newly unlocked level number, a "Play Level N+1" button, and a "Dashboard" link.
-- **Fail (< 15/15):** A "retry" icon, the score, an encouraging message ("You need 15/15 to pass. Keep trying!"), a "Retry Level N" button, and a "Dashboard" link.
+- **Pass (15/15):** A trophy icon, "Level Up!" animated text, the score, a congratulations message showing the newly unlocked level number, a "Play Level N+1" link, and a "Dashboard" link.
+- **Fail (< 15/15):** A "retry" icon, the score, an encouraging message ("You need 15/15 to pass. Keep trying!"), a "Retry Level N" **button** (`<button onClick>`, not a navigation link — see below), and a "Dashboard" link.
+
+**Retry behavior (in-place reload, no navigation).** The "Retry Level N" control on the fail branch is a `<button>` wired to a `resetAndReload` callback in the game page, not a `<Link>`. Because the failed round's URL (`/game/[level]`) is identical to the retry target, a same-URL `<Link>` would have been a App-Router no-op (the route's data-loading effect is keyed on `[level]`, which does not change, so it would never re-fire) — this was a real, fixed bug. `resetAndReload` instead: clears the pending feedback timeout and the countdown timer interval (preventing a stale timeout from the just-finished round firing after reset), resets all round state (`results`, `answers`, `currentIndex`, `score`, `selectedAnswer`, `timeLeft`, `errorMsg`) and sets the phase to `loading`, then re-fetches `GET /api/game/start?level=N` and transitions to `playing` (or `error` on failure) — all without a full page navigation or component remount. The pass-branch "Play Level N+1" link and both results-screen "Dashboard" links are unaffected and remain plain `<Link>` navigations.
 
 In both cases, a full answer key is rendered below. Each of the 15 rows shows:
 - A thumbnail of the flag
@@ -209,12 +212,13 @@ guess-the-flag/
 │   ├── countryNames.ts                # Localized country names (hi/bn/pa)
 │   ├── i18n.ts                        # Locale type, UI dictionaries, t(), cookie helpers
 │   ├── security.ts                    # Rate limiter + CSRF origin check
+│   ├── version.ts                     # APP_VERSION constant, kept in sync with package.json
 │   └── types.ts                       # Shared TypeScript interfaces
 ├── scripts/
 │   ├── download-flags.ts              # One-time: downloads 197 SVGs from flagcdn.com
 │   └── seed.ts                        # One-time: populates countries table
 ├── tests/
-│   ├── gtf.test.ts                    # 71-test suite (node:test runner)
+│   ├── gtf.test.ts                    # 74-test suite (node:test runner)
 │   └── tsconfig.json                  # Test-specific TS config (commonjs, react jsx)
 ├── public/
 │   └── flags/                         # 197 local SVG flag files (e.g. us.svg, jp.svg)
@@ -484,6 +488,10 @@ passed = (score === total) && (total === 15)
 
 Both conditions must hold — submitting fewer than 15 answers cannot produce a pass. On pass, `user_progress` is upserted with `completed = 1, attempts + 1`. If `level >= user.current_level` at submission time, `users.current_level` is set to `level + 1`. On fail, `user_progress` is upserted with `attempts + 1` (completed value is not reset if it was previously 1).
 
+**Grading implementation — batched, single round-trip (performance fix).** Grading previously issued one `SELECT ... WHERE id = ${countryId}` Postgres round-trip per submitted answer (an N+1 pattern — 15 serial round-trips against the transaction pooler, the root cause of a 3–5 second results-screen load). It now issues a single batched query, `SELECT id, name, iso_code, flag_path FROM countries WHERE id = ANY(${ids})` (with `ids` derived from `answers.map(a => a.countryId)`), loads the rows into an in-memory `Map` keyed by `id`, and grades by iterating `answers` (preserving submission order) and looking up each country from the map. The `ids` array is passed as a single bound Postgres array parameter via the `postgres` library's tagged-template syntax — not string-interpolated — so this introduces no new SQL-injection surface (confirmed safe by penetration test, finding F1). An empty `answers` array short-circuits to `rows = []` rather than issuing a malformed `ANY('{}')` query. Grading semantics are otherwise unchanged from the prior per-row implementation: an unknown/non-existent `countryId` is skipped via `continue` (not counted in `score` or `total`, and `ANY()` does not error on it); a `countryId` repeated across multiple answer entries is graded independently per submission (each entry looked up and judged on its own, not deduplicated); localized-or-English name matching and the `passed` rule are byte-for-byte identical to the pre-rewrite behavior. Covered by 5 new integration tests (unknown-id skip, duplicate-id independent grading with order assertions, empty-answers, all-null-timeout, and a level-bound regression guard) — see [Section 10](#10-running-the-test-suite).
+
+**Known low-severity hardening gaps (not yet implemented; from penetration test, see [Section 12](#12-security-notes)):** the route validates that `answers` is an array but does not cap its length (F2) or validate the shape of its elements (F3). Both are pre-existing gaps newly in scope on the changed lines, rated Low, and explicitly **not implemented** in this batch.
+
 ---
 
 ### GET /api/progress
@@ -663,6 +671,18 @@ This check is applied on all state-changing POST routes (`/api/auth/signup`, `/a
 
 ---
 
+### 7.7 lib/version.ts
+
+A new, minimal module exporting a single constant:
+
+```typescript
+export const APP_VERSION = '0.1.0';
+```
+
+Kept manually in sync with `package.json`'s `"version"` field (also `0.1.0` as of this writing). It exists so the login page can render a build/version string without importing `package.json` directly into a client component. Consumed only by `app/login/page.tsx`, which renders `v{APP_VERSION}` (e.g. `v0.1.0`) as static text below the "Sign up" footer line, inside the login card. Not rendered on `/signup` or `/dashboard`. No i18n key is associated with it (the version string is locale-neutral by design). The penetration test classified this as an Info-level, accepted version disclosure (finding F4) — see [Section 12](#12-security-notes).
+
+---
+
 ## 8. UI Pages
 
 | Route | Component type | Render strategy | Auth guard |
@@ -762,7 +782,8 @@ The suite uses the Node.js built-in `node:test` runner, executed via `tsx`.
 | `DB / seed integrity` | 10 | Schema columns, row counts, tier distribution |
 | `lib/game.ts — buildQuestions` | 37 | tiersForLevel helper; per-level: count, option uniqueness, correct inclusion, no duplicate IDs, tier correctness, flagPath format; level-6 multi-tier |
 | `API integration` | 13 | Full E2E auth, level locking, game start, all-correct pass, progress endpoint, lock release, partial-correct fail |
-| **Total** | **71** | **All passed** |
+| `API integration — batched-grading equivalence` | 5 | Added for the `submit` route's N+1 → single `ANY()` query rewrite: unknown-`countryId` skip without crashing `ANY()`, duplicate-`countryId` graded independently per submission with order preserved, empty-`answers` array (`total`/`score` = 0), all-15 timed-out (`null`) answers score 0, and a level-bound regression guard (`level: 99999` still rejected after the rewrite) |
+| **Total** | **74** | **All passed** |
 
 Test users are created with a timestamped username prefix (`testuser_<epoch>`) and deleted by the `after` hook (`DELETE FROM users WHERE username LIKE 'testuser_%'`). The real database is used (and cleaned up); no test-specific database is provisioned.
 
@@ -853,6 +874,28 @@ C1 is an operational action (password rotation) the owner must perform in Supaba
 - **Rate limiter scope:** `lib/security.ts` uses an in-memory store, appropriate for a
   single-server deployment. On a multi-instance / serverless host (e.g. Vercel), move
   the store to a shared backend (Redis / Upstash) for the limits to be global.
+
+### Penetration test findings (2026-06-20, 4-item bug-fix batch)
+
+A follow-up authorized pre-launch review re-scoped to the 4-item bug-fix batch (retry
+button, batched `submit` grading, HUD exit link, version text) against `main`. The
+previously-accepted items (C1 weak DB password, the "crafted client can submit
+known-correct countryIds" trade-off, the timer anti-pattern) were re-checked for
+regression and confirmed unaffected by this batch. **Verdict: PASS — no Critical or
+High findings.**
+
+| ID | Severity | Finding | Location | Status |
+|----|----------|---------|----------|--------|
+| F1 | Info | `WHERE id = ANY(${ids})` SQL-injection safety — verified the array is sent as a single bound Postgres parameter, never string-interpolated; not exploitable. | `app/api/game/submit/route.ts` | No action |
+| F2 | Low | No upper bound on `answers.length`. An authenticated, same-origin request could submit an oversized `answers` array, causing an unbounded array/Map allocation. Pre-existing gap (the prior N+1 loop had the same exposure, arguably worse), now in scope on the changed lines. | `app/api/game/submit/route.ts` | **Open** — recommended fix: reject `answers.length > 15` (the game is fixed at 15 questions) before querying. |
+| F3 | Low | No element-shape validation on `answers[]`. A malformed element (e.g. `null` in the array) throws an unhandled `TypeError`, surfacing as a generic 500. Not a true regression (the prior per-row loop would have thrown identically) but newly exercised by the `.map()` introduced in this batch. | `app/api/game/submit/route.ts` | **Open** — recommended fix: validate each element has an integer `countryId` and a `null`-or-string `answer` before grading. |
+| F4 | Info | Version disclosure (`v0.1.0`) on the public login page. Own application version only, not a framework/dependency version; no CVE-mappable signal. | `lib/version.ts`, `app/login/page.tsx` | Accept |
+| F5 | Info | "Back to Dashboard" exit path verified to record no progress (only `POST /api/game/submit` writes `user_progress`/`current_level`); no IDOR or auth regression; retry path does not weaken the server-side H2 level-bound check. | `app/game/[level]/page.tsx` | No action |
+
+**F2 and F3 are explicitly not yet implemented.** Both are Low severity and were
+recommended as a single small, surgical follow-up edit (length cap + element-shape
+guard, combinable in one validation check) but were left out of this batch per the
+pipeline's no-loop-back-for-Low rule. Track as a fast-follow hardening item.
 
 ---
 

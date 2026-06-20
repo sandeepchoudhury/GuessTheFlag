@@ -289,6 +289,25 @@
   text-decoration: none;
 }
 
+.exitBtn {
+  padding: 0.35rem 0.75rem;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-decoration: none;
+  display: inline-block;
+  transition: border-color 0.2s;
+  white-space: nowrap;
+}
+
+.exitBtn:hover {
+  border-color: var(--accent);
+  text-decoration: none;
+}
+
 /* ---- Answer Key Table ---- */
 .answerKeyTitle {
   font-size: 1.1rem;
