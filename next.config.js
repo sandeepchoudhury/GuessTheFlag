@@ -1,8 +1,17 @@
 /** @type {import('next').NextConfig} */
 
+// In development, `next dev` (webpack HMR + React Fast Refresh) evaluates modules with
+// eval(), which requires 'unsafe-eval' in the CSP. Production (`next start`) is compiled
+// ahead-of-time and uses no eval, so it keeps the locked-down policy with no 'unsafe-eval'.
+const isDev = process.env.NODE_ENV !== 'production';
+
 // Applied to every response. 'unsafe-inline' is required for Next.js 14's hydration
 // inline scripts and CSS Modules style injection; the app uses no inline styles of its
 // own and loads only same-origin assets, so the policy is otherwise locked down.
+const scriptSrc = isDev
+  ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+  : "script-src 'self' 'unsafe-inline'";
+
 const securityHeaders = [
   {
     key: 'Strict-Transport-Security',
@@ -21,7 +30,7 @@ const securityHeaders = [
       "default-src 'self'",
       "img-src 'self' data:",
       "style-src 'self' 'unsafe-inline'",
-      "script-src 'self' 'unsafe-inline'",
+      scriptSrc,
       "font-src 'self'",
       "connect-src 'self'",
       "base-uri 'self'",
