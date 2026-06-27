@@ -126,7 +126,7 @@ tests (DB integrity, `buildQuestions`, integration, JWT unit tests) require a re
 - **`next.config.js`** no longer has `experimental.serverComponentsExternalPackages`
   (that was for better-sqlite3, now removed); it now sends security headers. Still review
   key names if upgrading to Next 15/16.
-- **C1 OPEN (owner action, not code):** the Supabase DB password (`guesstheflag123`) is
+- **C1 OPEN (owner action, not code):** the Supabase DB password (``) is
   weak and sits in on-disk `.env` (gitignored, not in history). Rotate it and move the
   secret to the host's secret manager before going public.
 - Residual `npm audit` advisories only fix in Next 16 (breaking); deferred as a separate
